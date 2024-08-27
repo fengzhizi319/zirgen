@@ -232,18 +232,7 @@ struct TestExternHandler : public zirgen::Zll::ExternHandler {
       divide(results, fpArgs);
     } else if (name == "Log") {
       os << ": ";
-      // Propagate the extern to the legacy "log" handler, repackaging the
-      // variadic parameters as "regular" parameters
-      using zirgen::Zll::InterpVal;
-      llvm::StringRef message = args[0]->getAttr<mlir::StringAttr>().getValue();
-      auto varArgs = args[1]->getAttr<mlir::ArrayAttr>().getValue();
-      std::vector<InterpVal> vals(varArgs.size());
-      std::vector<InterpVal*> valPtrs(varArgs.size());
-      for (size_t i = 0; i < varArgs.size(); i++) {
-        vals[i].setVal(varArgs[i].cast<mlir::PolynomialAttr>().asArrayRef());
-        valPtrs[i] = &vals[i];
-      }
-      results = zirgen::Zll::ExternHandler::doExtern("log", message, valPtrs, outCount);
+      results = zirgen::Zll::ExternHandler::doExtern("log", extra, args, outCount);
     } else if (name == "configureInput" || name == "readInput") {
       // Pass through to common implementation
       results = zirgen::Zll::ExternHandler::doExtern(name, extra, args, outCount);
