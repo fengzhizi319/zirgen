@@ -50,6 +50,8 @@ struct TestCLOptions {
       "test-globals", cl::desc("Global values"), cl::value_desc("values")};
   cl::opt<size_t> testCycles{
       "test-cycles", cl::init(1), cl::desc("When running tests, run this many cycles")};
+  cl::opt<std::string> printBuffer{
+      "print-buffer", cl::desc("Print the execution trace while running tests")};
 };
 
 static llvm::ManagedStatic<TestCLOptions> clOpts;
@@ -316,10 +318,14 @@ int runTests(mlir::ModuleOp module) {
     // Allocate buffers
     using Polynomial = llvm::SmallVector<uint64_t, 4>;
     llvm::SmallVector<std::unique_ptr<std::vector<Polynomial>>> bufs;
+    std::vector<Polynomial>* printBuf;
     auto allBufs = Zll::lookupModuleAttr<Zll::BuffersAttr>(module).getBuffers();
     bufs.reserve(allBufs.size());
     for (auto bufDesc : allBufs) {
       auto& newBuf = bufs.emplace_back(std::make_unique<std::vector<Polynomial>>());
+      if (bufDesc.getName() == clOpts->printBuffer) {
+        printBuf = newBuf.get();
+      }
       if (bufDesc.getKind() == zirgen::Zll::BufferKind::Global) {
         newBuf->resize(bufDesc.getRegCount(), Polynomial(1, zirgen::Zll::kFieldInvalid));
         interp.setNamedBuf(bufDesc.getName(), *newBuf, 0 /* no per-cycle offset */);
@@ -370,6 +376,13 @@ int runTests(mlir::ModuleOp module) {
       if (mlir::failed(interp.runBlock(stepFuncOp.getBody().front()))) {
         failed = true;
         break;
+      }
+      if (printBuf) {
+        size_t columns = printBuf->size() / clOpts->testCycles;
+        for (size_t i = 0; i < columns; i++) {
+          llvm::outs() << printBuf->at(cycle * columns + i)[0] << "\t";
+        }
+        llvm::outs() << "\n";
       }
     }
     if (testExterns.lookups.size()) {
