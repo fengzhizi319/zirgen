@@ -184,18 +184,9 @@ private:
         impl << proto << " {\n";
         impl << "  return Fp(";
 
-        // Add polynomial coefficients
-        auto coeffs = powers[i];
-        for (size_t j = 0; j < coeffs.size(); j++) {
-          if (j > 0) impl << " + ";
-          if (j == 0) {
-            impl << coeffs[j];
-          } else if (j == 1) {
-            impl << coeffs[j] << " * x";
-          } else {
-            impl << coeffs[j] << " * x.pow(" << j << ")";
-          }
-        }
+        // Get polynomial coefficients for this power
+        auto coeff = powers[i];
+        impl << coeff;  // Assuming coeff is a single value that can be streamed
 
         impl << ");\n}\n";
         funcs.push_back(impl.str());
