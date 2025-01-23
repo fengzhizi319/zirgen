@@ -162,29 +162,40 @@ private:
                                 bool declsOnly,
                                 list& funcProtos,
                                 list& funcs) {
-    // Get mix powers needed for this function
-    auto powers = mixPows.getPowersNeeded();
-
-    // Calculate split ranges
-    size_t powersPerSplit = (powers.size() + splitCount - 1) / splitCount;
-    size_t startIdx = splitIndex * powersPerSplit;
-    size_t endIdx = std::min(startIdx + powersPerSplit, powers.size());
-
-    // Generate function declarations/definitions for each power
-    for (size_t i = startIdx; i < endIdx; i++) {
-      std::string fnName = llvm::formatv("poly_fp_{0}", i);
-
-      // Add function prototype
-      std::string proto = llvm::formatv("__device__ Fp {0}(const Fp& x)", fnName);
-      funcProtos.push_back(proto + ";");
-
-      if (!declsOnly) {
-        // Generate full function implementation
-        std::string impl = proto + " {\n";
-        impl += "  return x;\n";  // Simple placeholder implementation
-        impl += "}\n";
-        funcs.push_back(impl);
+    try {
+      // Get mix powers needed for this function
+      auto powers = mixPows.getPowersNeeded();
+      if (powers.empty()) {
+        return;  // No polynomials to generate
       }
+
+      // Calculate split ranges
+      size_t powersPerSplit = std::max<size_t>(1, (powers.size() + splitCount - 1) / splitCount);
+      size_t startIdx = std::min(splitIndex * powersPerSplit, powers.size());
+      size_t endIdx = std::min(startIdx + powersPerSplit, powers.size());
+
+      // Generate function declarations/definitions for each power
+      for (size_t i = startIdx; i < endIdx; i++) {
+        // Generate function name
+        std::string fnName = "poly_fp_" + std::to_string(i);
+
+        // Generate prototype
+        std::string proto = "__device__ Fp " + fnName + "(const Fp& x)";
+        if (funcProtos.valid()) {
+          funcProtos.push_back(proto + ";");
+        }
+
+        // Generate implementation if needed
+        if (!declsOnly && funcs.valid()) {
+          std::string impl = proto + " {\n";
+          impl += "  return x;\n";
+          impl += "}\n";
+          funcs.push_back(impl);
+        }
+      }
+    } catch (const std::exception& e) {
+      llvm::errs() << "Error in generatePolyImplementation: " << e.what() << "\n";
+      throw;
     }
   }
 
