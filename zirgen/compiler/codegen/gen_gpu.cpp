@@ -181,12 +181,12 @@ private:
 
         // Generate prototype
         std::string proto = "__device__ Fp " + fnName + "(const Fp& x)";
-        if (funcProtos.valid()) {
-          funcProtos.push_back(proto + ";");
-        }
 
-        // Generate implementation if needed
-        if (!declsOnly && funcs.valid()) {
+        // Always add prototype to declarations
+        funcProtos.push_back(proto + ";");
+
+        // Add implementation if needed
+        if (!declsOnly) {
           std::string impl = proto + " {\n";
           impl += "  return x;\n";
           impl += "}\n";
