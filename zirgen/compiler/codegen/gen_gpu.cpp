@@ -136,6 +136,64 @@ public:
   }
 
 private:
+  void emitStepFuncRecursion(const std::string& name, func::FuncOp func) {
+    auto tmpl = openTemplate("zirgen/compiler/codegen/gpu/recursion/step.tmpl" + suffix);
+
+    list lines;
+    PoolsSet pools;
+    emitOptimizedStepBlock(func.front(), lines, 0, pools);
+
+    data renderData;
+    renderData.set("name", func.getName().str());
+    renderData.set("args", generateOptimizedArgs(func));
+    renderData.set("fn", "step_" + name);
+    renderData.set("body", lines);
+    renderData.set("constants", generateConstantsStruct());
+    renderData.set("helpers", generateHelperFunctions());
+
+    tmpl.render(renderData, ofs);
+  }
+
+  void generatePolyImplementation(func::FuncOp func,
+                                MixPowAnalysis& mixPows,
+                                size_t splitIndex,
+                                size_t splitCount,
+                                bool declsOnly,
+                                list& funcProtos,
+                                list& funcs) {
+    // Implementation for generating polynomial evaluation code
+    // This will vary based on your specific needs
+  }
+
+  std::string emitPolynomialAttr(Operation* op, StringRef attrName) {
+    if (auto attr = op->getAttrOfType<ArrayAttr>(attrName)) {
+      // Convert polynomial coefficients to string representation
+      std::string result;
+      llvm::raw_string_ostream ss(result);
+      // Format coefficients based on your needs
+      return ss.str();
+    }
+    return "0";
+  }
+
+  void emitOperation(Operation* op,
+                    const FileContext& ctx,
+                    list& lines,
+                    size_t depth,
+                    StringRef type,
+                    FuncKind kind) {
+    std::string indent(depth * 2, ' ');
+    // Implement operation emission logic based on operation type
+    // This will vary based on your IR operations
+  }
+
+  std::string getOperandName(Value val) {
+    if (auto defOp = val.getDefiningOp()) {
+      return defOp->getName().getStringRef().str();
+    }
+    return "unknown";
+  }
+
   void analyzeFunction(func::FuncOp func) {
     varInfo.clear();
     patterns.clear();
