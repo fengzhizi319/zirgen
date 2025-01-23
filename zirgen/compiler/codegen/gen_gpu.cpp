@@ -92,14 +92,15 @@ public:
     PoolsSet pools;
     emitOptimizedStepBlock(func.front(), lines, 0, pools);
 
-    tmpl.render({
-      {"name", func.getName().str()},
-      {"args", generateOptimizedArgs(func)},
-      {"fn", "step_" + name},
-      {"body", lines},
-      {"constants", generateConstantsStruct()},
-      {"helpers", generateHelperFunctions()}
-    }, ofs);
+    data renderData;
+    renderData.set("name", func.getName().str());
+    renderData.set("args", generateOptimizedArgs(func));
+    renderData.set("fn", "step_" + name);
+    renderData.set("body", lines);
+    renderData.set("constants", generateConstantsStruct());
+    renderData.set("helpers", generateHelperFunctions());
+
+    tmpl.render(renderData, ofs);
   }
 
   void emitPoly(mlir::func::FuncOp func, size_t splitIndex, size_t splitCount, bool declsOnly) override {
@@ -394,13 +395,6 @@ static __device__ __forceinline__ void loadVector4(
     mustache tmpl(str);
     tmpl.set_custom_escape([](const std::string& str) { return str; });
     return tmpl;
-  }
-
-  std::string getOperandName(Value val) {
-    if (auto defOp = val.getDefiningOp()) {
-      return defOp->getName().str();
-    }
-    return "unknown";
   }
 
   int getMixIndex(const ComputationPattern& pattern) {
