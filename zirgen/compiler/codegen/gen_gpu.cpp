@@ -162,8 +162,45 @@ private:
                                 bool declsOnly,
                                 list& funcProtos,
                                 list& funcs) {
-    // Implementation for generating polynomial evaluation code
-    // This will vary based on your specific needs
+    // Get mix powers needed for this function
+    auto powers = mixPows.getPowersNeeded();
+
+    // Calculate split ranges
+    size_t powersPerSplit = (powers.size() + splitCount - 1) / splitCount;
+    size_t startIdx = splitIndex * powersPerSplit;
+    size_t endIdx = std::min(startIdx + powersPerSplit, powers.size());
+
+    // Generate function declarations/definitions for each power
+    for (size_t i = startIdx; i < endIdx; i++) {
+      std::string fnName = llvm::formatv("poly_fp_{0}", i);
+
+      // Add function prototype
+      std::string proto = llvm::formatv("__device__ Fp {0}(const Fp& x)", fnName);
+      funcProtos.push_back(proto + ";");
+
+      if (!declsOnly) {
+        // Generate full function implementation
+        std::stringstream impl;
+        impl << proto << " {\n";
+        impl << "  return Fp(";
+
+        // Add polynomial coefficients
+        auto coeffs = powers[i];
+        for (size_t j = 0; j < coeffs.size(); j++) {
+          if (j > 0) impl << " + ";
+          if (j == 0) {
+            impl << coeffs[j];
+          } else if (j == 1) {
+            impl << coeffs[j] << " * x";
+          } else {
+            impl << coeffs[j] << " * x.pow(" << j << ")";
+          }
+        }
+
+        impl << ");\n}\n";
+        funcs.push_back(impl.str());
+      }
+    }
   }
 
   std::string emitPolynomialAttr(Operation* op, StringRef attrName) {
