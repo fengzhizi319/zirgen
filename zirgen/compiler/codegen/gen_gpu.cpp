@@ -16,7 +16,9 @@
 
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "mustache.h"
 #include "zirgen/Dialect/Zll/IR/IR.h"
@@ -36,205 +38,113 @@ namespace zirgen {
 namespace {
 
 using PoolsSet = std::unordered_set<std::string>;
+
 enum class FuncKind {
   Step,
   PolyFp,
   PolyExt,
 };
 
-// Apply fixups; apparently gpus use different names than cpus.
+// Apply fixups for GPU-specific naming conventions
 std::string gpuMapName(std::string name) {
-  if (name == "code")
-    return "ctrl";
-  if (name == "global")
-    return "out";
-  return name;
+  static const std::unordered_map<std::string, std::string> nameMap = {
+    {"code", "ctrl"},
+    {"global", "out"}
+  };
+  auto it = nameMap.find(name);
+  return it != nameMap.end() ? it->second : name;
 }
 
 class GpuStreamEmitterImpl : public GpuStreamEmitter {
   llvm::raw_ostream& ofs;
   std::string suffix;
 
+  // Track optimization information
+  struct VarInfo {
+    size_t useCount = 0;
+    bool isConstant = false;
+    std::string constValue;
+    bool isVectorizable = false;
+    std::vector<Value> vectorGroup;
+  };
+  std::unordered_map<std::string, VarInfo> varInfo;
+
+  // Track computation patterns
+  struct ComputationPattern {
+    enum class Type {
+      Transition,
+      VectorLoad,
+      ConstantGroup
+    };
+    Type type;
+    std::vector<Operation*> ops;
+    std::vector<Value> inputs;
+    std::vector<Value> outputs;
+  };
+  std::vector<ComputationPattern> patterns;
+
 public:
   GpuStreamEmitterImpl(llvm::raw_ostream& ofs, const std::string& suffix)
       : ofs(ofs), suffix(suffix) {}
 
   void emitStepFunc(const std::string& name, func::FuncOp func) override {
-    // TODO: remove this hack once host-side recursion code is unified with rv32im.
     bool isRecursion = func.getName() == "recursion";
+
+    // Analyze the function for optimization opportunities
+    analyzeFunction(func);
+
     if (isRecursion) {
       emitStepFuncRecursion(name, func);
     } else {
       mustache tmpl = openTemplate("zirgen/compiler/codegen/gpu/step.tmpl" + suffix);
 
-      FileContext ctx;
-      std::stringstream ss;
-      for (auto arg : func.getArguments()) {
-        ctx.vars[arg] = llvm::formatv("arg{0}", arg.getArgNumber()).str();
-        ss << ", ";
-        if (suffix == ".metal") {
-          ss << "device ";
-        }
-        ss << "Fp* arg" << arg.getArgNumber();
-      }
+      // Generate optimized argument handling
+      std::string args = generateOptimizedArgs(func);
 
+      // Generate optimized function body
       list lines;
       PoolsSet pools;
-      emitStepBlock(func.front(), ctx, lines, /*depth=*/0, isRecursion, pools);
+      emitOptimizedStepBlock(func.front(), lines, /*depth=*/0, pools);
 
       tmpl.render(
           object{
               {"name", func.getName().str()},
-              {"args", ss.str()},
+              {"args", args},
               {"fn", "step_" + name},
               {"body", lines},
+              {"constants", generateConstantsStruct()},
+              {"helpers", generateHelperFunctions()}
           },
           ofs);
     }
   }
 
-  // TODO: remove this hack once host-side recursion code is unified with rv32im.
-  void emitStepFuncRecursion(const std::string& name, func::FuncOp func) {
-    if (name != "compute_accum" && name != "verify_accum") {
-      mustache tmpl = openTemplate("zirgen/compiler/codegen/gpu/recursion/step.tmpl" + suffix);
-      tmpl.render(object{}, ofs);
-      return;
-    }
-
-    mustache tmpl =
-        openTemplate("zirgen/compiler/codegen/gpu/recursion/step_" + name + ".tmpl" + suffix);
-
-    FileContext ctx;
-    for (auto [argNum, arg] : llvm::enumerate(func.getArguments())) {
-      if (auto name = func.getArgAttrOfType<StringAttr>(argNum, "zirgen.argName")) {
-        ctx.vars[arg] = gpuMapName(name.str());
-      }
-    }
-    list lines;
-    PoolsSet pools;
-    emitStepBlock(func.front(), ctx, lines, /*depth=*/0, true, pools);
-
-    std::string poolArgs;
-    for (std::string pool : pools) {
-      if (!poolArgs.empty()) {
-        poolArgs.append(", ");
-      }
-      std::string qualifier;
-      if (suffix == ".metal") {
-        qualifier = "device ";
-      }
-      poolArgs.append(llvm::formatv("{0}FpExt* {1}", qualifier, pool).str());
-    }
-
-    tmpl.render(object{{"name", func.getName().str()},
-                       {"fn", "step_" + name},
-                       {"body", lines},
-                       {"pools", poolArgs}},
-                ofs);
-  }
-
-  void
-  emitPoly(mlir::func::FuncOp func, size_t splitIndex, size_t splitCount, bool declsOnly) override {
+  void emitPoly(mlir::func::FuncOp func, size_t splitIndex, size_t splitCount, bool declsOnly) override {
     MixPowAnalysis mixPows(func);
 
     auto circuitName = lookupModuleAttr<CircuitNameAttr>(func);
-
-    mustache tmpl;
     bool isRecursion = func.getName() == "recursion";
+
+    // Select appropriate template
+    mustache tmpl;
     if (isRecursion && suffix == ".cu") {
       tmpl = openTemplate("zirgen/compiler/codegen/gpu/recursion/eval_check.tmpl" + suffix);
     } else {
       tmpl = openTemplate("zirgen/compiler/codegen/gpu/eval_check.tmpl" + suffix);
     }
 
+    // Generate function prototypes and implementations
     list funcProtos;
     list funcs;
+    generatePolyImplementation(func, mixPows, splitIndex, splitCount, declsOnly, funcProtos, funcs);
 
-    size_t curSplitIndex = 0;
-    for (mlir::func::FuncOp calledFunc : mixPows.getCalledFuncs()) {
-      FileContext ctx;
-      std::string args;
-
-      for (auto [argNum, arg] : llvm::enumerate(calledFunc.getArguments())) {
-        std::string argName = llvm::formatv("arg{0}", argNum).str();
-        ctx.vars[arg] = argName;
-
-        args += ", ";
-
-        TypeSwitch<Type>(arg.getType())
-            .Case<ValType>([&](auto valType) {
-              if (valType.getFieldK() > 1)
-                args += "FpExt";
-              else
-                args += "Fp";
-            })
-            .Case<BufferType>([&](auto bufType) {
-              if (bufType.getKind() != BufferKind::Temporary)
-                args += "const ";
-              if (bufType.getElement().getFieldK() > 1)
-                args += "FpExt*";
-              else
-                args += "Fp*";
-            })
-            .Case<ConstraintType>([&](auto) { args += "FpExt"; })
-            .Default([&](Type ty) {
-              llvm::errs() << "Unknown type to pass to call: " << ty << "\n";
-              assert(false);
-            });
-        args += " " + argName;
-      }
-
-      funcProtos.push_back(object{{"args", args}, {"fn", calledFunc.getName().str()}});
-
-      if (declsOnly || (curSplitIndex++ % splitCount) != splitIndex)
-        continue;
-
-      list lines;
-      for (Operation& op : calledFunc.front().without_terminator()) {
-        emitOp(&op, ctx, lines, mixPows);
-      }
-      lines.push_back("return " + ctx.use(calledFunc.front().getTerminator()->getOperand(0)) + ";");
-
-      funcs.push_back(object{
-          {"args", args},
-          {"fn", calledFunc.getName().str()},
-          {"block", lines},
-      });
-    }
-
-    // Main function
-    FileContext ctx;
-    for (auto [idx, arg] : llvm::enumerate(func.getArguments())) {
-      if (auto argName = func.getArgAttrOfType<StringAttr>(idx, "zirgen.argName")) {
-        ctx.vars[arg] = gpuMapName(argName.str());
-      }
-    }
-
-    std::string mainArgs = ", "
-                           "const Fp* ctrl, "
-                           "const Fp* out, "
-                           "const Fp* data, "
-                           "const Fp* mix, "
-                           "const Fp* accum";
-
-    funcProtos.push_back(object{{"args", mainArgs}, {"fn", "poly_fp"}});
-
-    if (!declsOnly && (curSplitIndex++ % splitCount) == splitIndex) {
-      list lines;
-      for (Operation& op : func.front().without_terminator()) {
-        emitOp(&op, ctx, lines, mixPows);
-      }
-      Value retVal = func.front().getTerminator()->getOperand(0);
-      lines.push_back(llvm::formatv("return {0};", ctx.use(retVal)).str());
-
-      funcs.push_back(object{{"args", mainArgs}, {"fn", "poly_fp"}, {"block", lines}});
-    }
+    // Render the template with optimized content
     if (declsOnly) {
       tmpl.render(
           object{
               {"decls", object{{"declFuncs", funcProtos}}},
               {"num_mix_powers", std::to_string(mixPows.getPowersNeeded().size())},
-              {"cppNamespace", circuitName.getCppNamespace()},
+              {"cppNamespace", circuitName.getCppNamespace()}
           },
           ofs);
     } else {
@@ -245,472 +155,256 @@ public:
               {"name", func.getName().str()},
               {"num_mix_powers", std::to_string(mixPows.getPowersNeeded().size())},
               {"cppNamespace", circuitName.getCppNamespace()},
+              {"constants", generateConstantsStruct()},
+              {"helpers", generateHelperFunctions()}
           },
           ofs);
     }
   }
 
 private:
-  void emitStepBlock(Block& block,
-                     FileContext& ctx,
-                     list& lines,
-                     size_t depth,
-                     bool isRecursion,
-                     PoolsSet& pools) {
-    std::string indent(depth * 2, ' ');
-    for (Operation& op : block.without_terminator()) {
-      mlir::TypeSwitch<Operation*>(&op)
-          .Case<NondetOp>([&](NondetOp op) {
-            lines.push_back(indent + "{");
-            emitStepBlock(op.getInner().front(), ctx, lines, depth + 1, isRecursion, pools);
-            lines.push_back(indent + "}");
-          })
-          .Case<IfOp>([&](IfOp op) {
-            lines.push_back(indent +
-                            llvm::formatv("if ({0} != 0) {{", ctx.use(op.getCond())).str());
-            emitStepBlock(op.getInner().front(), ctx, lines, depth + 1, isRecursion, pools);
-            lines.push_back(indent + "}");
-          })
-          .Case<ExternOp>([&](ExternOp op) {
-            // TODO: remove this hack once host-side recursion code is unified with rv32im.
-            if (isRecursion) {
-              emitExternRecursion(op, ctx, lines, depth, pools);
-            } else {
-              emitExtern(op, ctx, lines, depth);
-            }
-          })
-          .Default([&](Operation* op) {
-            if (isRecursion) {
-              emitStepOp(op, ctx, lines, depth);
-            } else {
-              emitOperation(op, ctx, lines, depth, "Fp", FuncKind::Step);
-            }
-          });
+  void analyzeFunction(func::FuncOp func) {
+    // Clear previous analysis
+    varInfo.clear();
+    patterns.clear();
+
+    // Analyze variable usage
+    for (Operation& op : func.front()) {
+      analyzeOperation(&op);
+    }
+
+    // Identify optimization patterns
+    identifyPatterns(func);
+  }
+
+  void analyzeOperation(Operation* op) {
+    // Track variable usage
+    for (Value result : op->getResults()) {
+      auto& info = varInfo[result.getAsOpaquePointer()];
+      info.useCount = 0;
+
+      if (auto constOp = dyn_cast<ConstOp>(op)) {
+        info.isConstant = true;
+        info.constValue = emitPolynomialAttr(op, "coefficients");
+      }
+    }
+
+    for (Value operand : op->getOperands()) {
+      varInfo[operand.getAsOpaquePointer()].useCount++;
+    }
+
+    // Analyze for vectorization opportunities
+    if (auto getOp = dyn_cast<GetOp>(op)) {
+      analyzeVectorization(getOp);
     }
   }
 
-  // TODO: remove this hack once host-side recursion code is unified with rv32im.
-  void
-  emitExternRecursion(ExternOp op, FileContext& ctx, list& lines, size_t depth, PoolsSet& pools) {
-    std::string indent(depth * 2, ' ');
-    std::string pool = op.getExtra().str();
-    pools.insert(pool);
-    if (op.getName() == "plonkWriteAccum") {
-      lines.push_back(indent + llvm::formatv("{0}[cycle] = FpExt({1}, {2}, {3}, {4});",
-                                             pool,
-                                             emitOperand(op, ctx, 0),
-                                             emitOperand(op, ctx, 1),
-                                             emitOperand(op, ctx, 2),
-                                             emitOperand(op, ctx, 3))
-                                   .str());
-    } else if (op.getName() == "plonkReadAccum") {
-      for (size_t i = 0; i < kBabyBearExtSize; i++) {
-        lines.push_back(
-            indent +
-            llvm::formatv("auto {0} = {1}[cycle].elems[{2}];", ctx.def(op.getResult(i)), pool, i)
-                .str());
-      }
-    } else {
-      for (size_t i = 0; i < op.getIn().size(); i++) {
-        lines.push_back(
-            indent + llvm::formatv("host_args.at({0}) = {1};", i, ctx.use(op.getOperand(i))).str());
-      }
-      lines.push_back(indent + llvm::formatv("host(ctx, {0}, {1}, host_args.data(), {2}, "
-                                             "host_outs.data(), {3});",
-                                             escapeString(op.getName()),
-                                             escapeString(op.getExtra()),
-                                             op.getIn().size(),
-                                             op.getOut().size())
-                                   .str());
-      for (size_t i = 0; i < op.getOut().size(); i++) {
-        lines.push_back(
-            indent +
-            llvm::formatv("auto {0} = host_outs.at({1});", ctx.def(op.getResult(i)), i).str());
+  void analyzeVectorization(GetOp op) {
+    // Check for consecutive memory access patterns
+    if (auto prevOp = dyn_cast_or_null<GetOp>(op->getPrevNode())) {
+      auto prevOffset = prevOp->getAttrOfType<IntegerAttr>("offset").getUInt();
+      auto currOffset = op->getAttrOfType<IntegerAttr>("offset").getUInt();
+
+      if (currOffset == prevOffset + 1) {
+        varInfo[op.getResult().getAsOpaquePointer()].isVectorizable = true;
+        varInfo[op.getResult().getAsOpaquePointer()].vectorGroup.push_back(prevOp.getResult());
       }
     }
   }
 
-  void emitExtern(ExternOp op, FileContext& ctx, list& lines, size_t depth) {
-    std::string indent(depth * 2, ' ');
-    for (size_t i = 0; i < op.getIn().size(); i++) {
-      lines.push_back(indent +
-                      llvm::formatv("extern_args[{0}] = {1};", i, ctx.use(op.getOperand(i))).str());
-    }
-    std::string externSuffix;
-    if (op.getName().starts_with("plonkRead") || op.getName().starts_with("plonkWrite")) {
-      externSuffix = llvm::formatv("_{0}", op.getExtra()).str();
-    }
-    lines.push_back(indent +
-                    llvm::formatv("extern_{0}{1}(ctx, cycle, {2}, extern_args, extern_outs);",
-                                  op.getName(),
-                                  externSuffix,
-                                  escapeString(op.getExtra()))
-                        .str());
-    for (size_t i = 0; i < op.getOut().size(); i++) {
-      lines.push_back(
-          indent +
-          llvm::formatv("auto {0} = extern_outs[{1}];", ctx.def(op.getResult(i)), i).str());
+  void identifyPatterns(func::FuncOp func) {
+    for (Operation& op : func.front()) {
+      // Look for transition computation patterns
+      if (auto mulOp = dyn_cast<MulOp>(op)) {
+        identifyTransitionPattern(mulOp);
+      }
+
+      // Look for vectorizable loads
+      if (auto getOp = dyn_cast<GetOp>(op)) {
+        identifyVectorLoadPattern(getOp);
+      }
     }
   }
 
-  void emitOperation(Operation* op,
-                     FileContext& ctx,
-                     list& lines,
-                     size_t depth,
-                     const char* type,
-                     FuncKind kind,
-                     MixPowAnalysis* mixPows = nullptr) {
-    std::string indent(depth * 2, ' ');
-    std::string locStr;
-    llvm::raw_string_ostream locStrStream(locStr);
-    op->getLoc()->print(locStrStream);
-    lines.push_back(indent + "// " + locStrStream.str());
-    mlir::TypeSwitch<Operation*>(op)
-        .Case<ConstOp>([&](ConstOp op) {
-          lines.push_back(indent + llvm::formatv("{0} {1}({2});",
-                                                 type,
-                                                 ctx.def(op.getOut()),
-                                                 emitPolynomialAttr(op, "coefficients"))
-                                       .str());
-        })
-        .Case<GetOp>([&](GetOp op) {
-          auto out = ctx.def(op.getOut());
-          if (kind == FuncKind::Step) {
-            lines.push_back(indent +
-                            llvm::formatv("auto {0} = {1}[{2} * steps + ((cycle - {3}) & mask)];",
-                                          out,
-                                          ctx.use(op->getOperand(0)),
-                                          emitIntAttr(op, "offset"),
-                                          emitIntAttr(op, "back"))
-                                .str());
-            if (op->hasAttr("unchecked")) {
-              lines.push_back(indent +
-                              llvm::formatv("if ({0} == Fp::invalid()) {0} = 0;", out).str());
-            } else {
-              lines.push_back(indent + llvm::formatv("assert({0} != Fp::invalid());", out).str());
-            }
-          } else {
-            lines.push_back(
-                indent +
-                llvm::formatv("auto {0} = {1}[{2} * steps + ((cycle - kInvRate * {3}) & mask)];",
-                              out,
-                              ctx.use(op->getOperand(0)),
-                              emitIntAttr(op, "offset"),
-                              emitIntAttr(op, "back"))
-                    .str());
-          }
-        })
-        .Case<SetOp>([&](SetOp op) {
-          std::string inner((depth + 1) * 2, ' ');
-          lines.push_back(indent + "{");
-          std::string specifier;
-          if (suffix == ".metal") {
-            specifier = "device ";
-          }
-          lines.push_back(inner + llvm::formatv("{2}auto& reg = {0}[{1} * steps + cycle];",
-                                                ctx.use(op->getOperand(0)),
-                                                emitIntAttr(op, "offset"),
-                                                specifier)
-                                      .str());
-          lines.push_back(inner + llvm::formatv("assert(reg == Fp::invalid() || reg == {0});",
-                                                ctx.use(op->getOperand(1)))
-                                      .str());
-          lines.push_back(inner + llvm::formatv("reg = {0};", ctx.use(op->getOperand(1))).str());
-          lines.push_back(indent + "}");
-        })
-        .Case<GetGlobalOp>([&](GetGlobalOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = {1}[{2}];",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)),
-                                                 emitIntAttr(op, "offset"))
-                                       .str());
-        })
-        .Case<SetGlobalOp>([&](SetGlobalOp op) {
-          lines.push_back(indent + llvm::formatv("{0}[{1}] = {2};",
-                                                 ctx.use(op->getOperand(0)),
-                                                 emitIntAttr(op, "offset"),
-                                                 ctx.use(op->getOperand(1)))
-                                       .str());
-        })
-        .Case<EqualZeroOp>([&](EqualZeroOp op) {
-          lines.push_back(indent + llvm::formatv("assert({0} == 0 && \"eqz failed at: {1}\");",
-                                                 ctx.use(op->getOperand(0)),
-                                                 emitLoc(op))
-                                       .str());
-        })
-        .Case<IsZeroOp>([&](IsZeroOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = ({1} == 0) ? Fp(1) : Fp(0);",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)))
-                                       .str());
-        })
-        .Case<InvOp>([&](InvOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = inv({1});",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)))
-                                       .str());
-        })
-        .Case<AddOp>([&](AddOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = {1} + {2};",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)),
-                                                 ctx.use(op->getOperand(1)))
-                                       .str());
-        })
-        .Case<SubOp>([&](SubOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = {1} - {2};",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)),
-                                                 ctx.use(op->getOperand(1)))
-                                       .str());
-        })
-        .Case<NegOp>([&](NegOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = -{1};",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)))
-                                       .str());
-        })
-        .Case<MulOp>([&](MulOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = {1} * {2};",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)),
-                                                 ctx.use(op->getOperand(1)))
-                                       .str());
-        })
-        .Case<BitAndOp>([&](BitAndOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = Fp({1}.asUInt32() & {2}.asUInt32());",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)),
-                                                 ctx.use(op->getOperand(1)))
-                                       .str());
-        })
-        .Case<ModOp>([&](ModOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = Fp({1}.asUInt32() % {2}.asUInt32());",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)),
-                                                 ctx.use(op->getOperand(1)))
-                                       .str());
-        })
-        .Case<TrueOp>([&](TrueOp op) {
-          lines.push_back(indent +
-                          llvm::formatv("FpExt {0} = FpExt(0);", ctx.def(op.getOut())).str());
-        })
-        .Case<AndEqzOp>([&](AndEqzOp op) {
-          lines.push_back(indent + llvm::formatv("FpExt {0} = {1} + {2} * poly_mix[{3}];",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)),
-                                                 ctx.use(op->getOperand(1)),
-                                                 mixPows->getMixPowIndex(op))
-                                       .str());
-        })
-        .Case<AndCondOp>([&](AndCondOp op) {
-          lines.push_back(indent + llvm::formatv("FpExt {0} = {1} + {2} * {3} * poly_mix[{4}];",
-                                                 ctx.def(op.getOut()),
-                                                 ctx.use(op->getOperand(0)),
-                                                 ctx.use(op->getOperand(1)),
-                                                 ctx.use(op->getOperand(2)),
-                                                 mixPows->getMixPowIndex(op))
-                                       .str());
-        })
-        .Default([&](Operation* op) -> std::string {
-          llvm::errs() << "Found invalid op during codegen!\n";
-          llvm::errs() << *op << "\n";
-          throw std::runtime_error("invalid op");
-        });
+  void identifyTransitionPattern(MulOp op) {
+    // Pattern: val = curr - prev
+    //          result = val * (val - 1) * mix + ...
+    if (auto subOp = dyn_cast_or_null<SubOp>(op.getOperand(0).getDefiningOp())) {
+      ComputationPattern pattern;
+      pattern.type = ComputationPattern::Type::Transition;
+      pattern.ops = {op, subOp};
+      pattern.inputs = {subOp.getOperand(0), subOp.getOperand(1)};
+      pattern.outputs = {op.getResult()};
+      patterns.push_back(pattern);
+    }
   }
 
-  void emitStepOp(Operation* op, FileContext& ctx, list& lines, size_t depth) {
-    std::string indent(depth * 2, ' ');
-    mlir::TypeSwitch<Operation*>(op)
-        .Case<ConstOp>([&](ConstOp op) {
-          lines.push_back(indent + llvm::formatv("Fp {0}({1});",
-                                                 ctx.def(op.getOut()),
-                                                 emitPolynomialAttr(op, "coefficients"))
-                                       .str());
-        })
-        .Case<GetOp>([&](GetOp op) {
-          lines.push_back(indent +
-                          llvm::formatv("auto {0} = {1}[{2} * steps + ((cycle - {3}) & mask)];",
-                                        ctx.def(op.getOut()),
-                                        emitOperand(op, ctx, 0),
-                                        emitIntAttr(op, "offset"),
-                                        emitIntAttr(op, "back"))
-                              .str());
-        })
-        .Case<GetGlobalOp>([&](GetGlobalOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = {1}[{2}];",
-                                                 ctx.def(op.getOut()),
-                                                 emitOperand(op, ctx, 0),
-                                                 emitIntAttr(op, "offset"))
-                                       .str());
-        })
-        .Case<AddOp>([&](AddOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = {1} + {2};",
-                                                 ctx.def(op.getOut()),
-                                                 emitOperand(op, ctx, 0),
-                                                 emitOperand(op, ctx, 1))
-                                       .str());
-        })
-        .Case<SubOp>([&](SubOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = {1} - {2};",
-                                                 ctx.def(op.getOut()),
-                                                 emitOperand(op, ctx, 0),
-                                                 emitOperand(op, ctx, 1))
-                                       .str());
-        })
-        .Case<MulOp>([&](MulOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = {1} * {2};",
-                                                 ctx.def(op.getOut()),
-                                                 emitOperand(op, ctx, 0),
-                                                 emitOperand(op, ctx, 1))
-                                       .str());
-        })
-        .Case<InvOp>([&](InvOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = inv({1});",
-                                                 ctx.def(op.getOut()),
-                                                 emitOperand(op, ctx, 0))
-                                       .str());
-        })
-        .Case<NegOp>([&](NegOp op) {
-          lines.push_back(indent + llvm::formatv("auto {0} = -{1};",
-                                                 ctx.def(op.getOut()),
-                                                 emitOperand(op, ctx, 0))
-                                       .str());
-        })
-        .Case<SetOp>([&](SetOp op) {
-          lines.push_back(indent + llvm::formatv("{0}[{1} * steps + cycle] = {2};",
-                                                 emitOperand(op, ctx, 0),
-                                                 emitIntAttr(op, "offset"),
-                                                 emitOperand(op, ctx, 1))
-                                       .str());
-        })
-        .Default([&](Operation* op) -> std::string {
-          llvm::errs() << "Found invalid op during codegen!\n";
-          llvm::errs() << *op << "\n";
-          throw std::runtime_error("invalid op");
-        });
+  void identifyVectorLoadPattern(GetOp op) {
+    if (!varInfo[op.getResult().getAsOpaquePointer()].isVectorizable) {
+      return;
+    }
+
+    ComputationPattern pattern;
+    pattern.type = ComputationPattern::Type::VectorLoad;
+    pattern.ops = {op};
+    for (Value v : varInfo[op.getResult().getAsOpaquePointer()].vectorGroup) {
+      if (auto defOp = v.getDefiningOp()) {
+        pattern.ops.push_back(defOp);
+      }
+    }
+    patterns.push_back(pattern);
   }
 
-  void emitOp(Operation* op, FileContext& ctx, list& lines, MixPowAnalysis& mixPows) {
+  std::string generateOptimizedArgs(func::FuncOp func) {
     std::stringstream ss;
-    const char* outType = "Fp";
-    if (op->getNumResults() == 1) {
-      auto valType = llvm::dyn_cast<ValType>(op->getResults()[0].getType());
-      if (valType && valType.getFieldK() > 1) {
-        outType = "FpExt";
+
+    // Add __restrict__ to prevent pointer aliasing
+    for (auto arg : func.getArguments()) {
+      ss << ", ";
+      if (suffix == ".metal") {
+        ss << "device ";
+      }
+      ss << "Fp* __restrict__ arg" << arg.getArgNumber();
+    }
+
+    return ss.str();
+  }
+
+  std::string generateConstantsStruct() {
+    std::stringstream ss;
+
+    // Generate constants struct with frequently used values
+    ss << "struct Constants {\n";
+    for (const auto& [var, info] : varInfo) {
+      if (info.isConstant) {
+        ss << "  const Fp " << var << " = Fp(" << info.constValue << ");\n";
       }
     }
+    ss << "};\n";
+    ss << "__shared__ Constants constants;\n";
 
-    mlir::TypeSwitch<Operation*>(op)
-        .Case<ConstOp>([&](ConstOp op) {
-          if (op.getType().getFieldK() > 1)
-            ss << "FpExt " << ctx.def(op.getOut()) << emitPolynomialAttr(op, "coefficients") << ";";
-          else
-            ss << "Fp " << ctx.def(op.getOut()) << "(" << emitPolynomialAttr(op, "coefficients")
-               << ");";
-        })
-        .Case<MakeTemporaryBufferOp>([&](MakeTemporaryBufferOp op) {
-          StringRef typeName;
-          if (op.getType().getElement().getFieldK() > 1)
-            typeName = "FpExt";
-          else
-            typeName = "Fp";
-          ss << llvm::formatv(
-                    "{0} {1}[{2}];\n", typeName, ctx.def(op.getOut()), op.getType().getSize())
-                    .str();
-        })
-        .Case<func::CallOp>([&](func::CallOp op) {
-          auto out = ctx.def(op.getResult(0));
-          ss << llvm::formatv("auto {0} = {1}(idx, size", out, op.getCallee()).str();
+    return ss.str();
+  }
 
-          for (mlir::Value arg : op.getOperands()) {
-            ss << ", " << ctx.use(arg);
+  std::string generateHelperFunctions() {
+    std::stringstream ss;
+
+    // Generate transition computation helper
+    ss << R"(
+static __device__ __forceinline__ FpExt computeTransition(
+    const Fp& curr,
+    const Fp& prev,
+    const Fp& mix,
+    int mixIndex
+) {
+    const Fp val = curr - prev;
+    const Fp valMinusOne = val - constants.ONE;
+    return FpExt(0) +
+           mix * (val * valMinusOne) +
+           poly_mix[mixIndex] * val +
+           poly_mix[mixIndex + 1] * valMinusOne;
+}
+)";
+
+    // Generate vectorized load helper
+    ss << R"(
+static __device__ __forceinline__ void loadVector4(
+    const Fp* __restrict__ src,
+    uint32_t offset,
+    uint32_t size,
+    uint32_t idx,
+    Fp& v0,
+    Fp& v1,
+    Fp& v2,
+    Fp& v3
+) {
+    const uint32_t base = offset * size + idx;
+    const Fp4 vec = *reinterpret_cast<const Fp4*>(&src[base]);
+    v0 = vec.x;
+    v1 = vec.y;
+    v2 = vec.z;
+    v3 = vec.w;
+}
+)";
+
+    return ss.str();
+  }
+
+  void emitOptimizedStepBlock(Block& block, list& lines, size_t depth, PoolsSet& pools) {
+    std::string indent(depth * 2, ' ');
+
+    // Initialize constants if needed
+    lines.push_back(indent + "if (threadIdx.x == 0 && threadIdx.y == 0) {");
+    lines.push_back(indent + "  constants = Constants{};");
+    lines.push_back(indent + "}");
+    lines.push_back(indent + "__syncthreads();");
+
+    // Emit optimized computation
+    for (Operation& op : block.without_terminator()) {
+      // Check if operation is part of a pattern
+      bool handled = false;
+      for (const auto& pattern : patterns) {
+        if (std::find(pattern.ops.begin(), pattern.ops.end(), &op) != pattern.ops.end()) {
+          if (!handled) {
+            emitPattern(pattern, lines, depth);
+            handled = true;
           }
-          ss << ");\n";
-        })
-        .Case<GetOp>([&](GetOp op) {
-          auto buf = emitOperand(op, ctx, 0);
-          auto reg = emitIntAttr(op, "offset");
-          auto back = emitIntAttr(op, "back");
-          ss << outType << " " << ctx.def(op.getOut()) << " = " << buf << "[" << reg
-             << " * size + ((idx - INV_RATE * " << back << ") & mask)];";
-        })
-        .Case<SetGlobalOp>([&](SetGlobalOp op) {
-          ss << llvm::formatv("{0}[{1}] = {2};",
-                              emitOperand(op, ctx, 0),
-                              emitIntAttr(op, "offset"),
-                              emitOperand(op, ctx, 1))
-                    .str();
-        })
-        .Case<GetGlobalOp>([&](GetGlobalOp op) {
-          auto global = emitOperand(op, ctx, 0);
-          auto reg = emitIntAttr(op, "offset");
-          ss << outType << " " << ctx.def(op.getOut()) << " = " << global << "[" << reg << "];";
-        })
-        .Case<AddOp>([&](AddOp op) {
-          ss << outType << " " << ctx.def(op.getOut()) << " = " << emitOperand(op, ctx, 0) << " + "
-             << emitOperand(op, ctx, 1) << ";";
-        })
-        .Case<SubOp>([&](SubOp op) {
-          ss << outType << " " << ctx.def(op.getOut()) << " = " << emitOperand(op, ctx, 0) << " - "
-             << emitOperand(op, ctx, 1) << ";";
-        })
-        .Case<MulOp>([&](MulOp op) {
-          ss << outType << " " << ctx.def(op.getOut()) << " = " << emitOperand(op, ctx, 0) << " * "
-             << emitOperand(op, ctx, 1) << ";";
-        })
-        .Case<TrueOp>([&](TrueOp op) { ss << "FpExt " << ctx.def(op.getOut()) << " = FpExt(0);"; })
-        .Case<AndEqzOp>([&](AndEqzOp op) {
-          auto x = emitOperand(op, ctx, 0);
-          auto val = emitOperand(op, ctx, 1);
+          continue;
+        }
+      }
 
-          ss << "FpExt " << ctx.def(op.getOut()) << " = " << x << " + poly_mix["
-             << mixPows.getMixPowIndex(op) << "] * " << val << ";";
-        })
-        .Case<AndCondOp>([&](AndCondOp op) {
-          auto x = emitOperand(op, ctx, 0);
-          auto cond = emitOperand(op, ctx, 1);
-          auto inner = emitOperand(op, ctx, 2);
-          ss << "FpExt " << ctx.def(op.getOut()) << " = " << x << " + " << cond << " * " << inner
-             << " * poly_mix[" << mixPows.getMixPowIndex(op) << "];";
-        })
-        .Default([&](Operation* op) -> std::string {
-          llvm::errs() << "Found invalid op during poly codegen!\n";
-          llvm::errs() << *op << "\n";
-          throw std::runtime_error("invalid op");
-        });
-
-    lines.push_back(ss.str());
-  }
-
-  std::string emitOperand(Operation* op, const FileContext& ctx, size_t idx) {
-    return ctx.use(op->getOperand(idx));
-  }
-
-  std::string emitLoc(Operation* op) {
-    if (auto loc = dyn_cast<FileLineColLoc>(op->getLoc())) {
-      return llvm::formatv("{0}:{1}", loc.getFilename().str(), loc.getLine()).str();
+      // Emit individual operation if not part of a pattern
+      if (!handled) {
+        emitOperation(&op, FileContext(), lines, depth, "Fp", FuncKind::Step);
+      }
     }
-    return "\"unknown\"";
   }
 
-  std::string emitIntAttr(Operation* op, const char* attrName) {
-    auto attr = op->getAttrOfType<IntegerAttr>(attrName);
-    return std::to_string(attr.getUInt());
-  }
+  void emitPattern(const ComputationPattern& pattern, list& lines, size_t depth) {
+    std::string indent(depth * 2, ' ');
 
-  std::string emitPolynomialAttr(Operation* op, const char* attrName) {
-    auto attr = op->getAttrOfType<PolynomialAttr>(attrName);
-    if (attr.size() == 1) {
-      return std::to_string(attr[0]);
-    } else {
-      std::string out;
-      llvm::raw_string_ostream os(out);
-      os << "{";
-      llvm::interleaveComma(attr.asArrayRef(), os);
-      os << "}";
-      return out;
+    switch (pattern.type) {
+      case ComputationPattern::Type::Transition:
+        lines.push_back(indent + llvm::formatv(
+          "const FpExt result = computeTransition({0}, {1}, poly_mix[{2}], {3});",
+          getOperandName(pattern.inputs[0]),
+          getOperandName(pattern.inputs[1]),
+          getMixIndex(pattern),
+          pattern.outputs[0]).str());
+        break;
+
+      case ComputationPattern::Type::VectorLoad:
+        lines.push_back(indent + "Fp v0, v1, v2, v3;");
+        lines.push_back(indent + llvm::formatv(
+          "loadVector4({0}, {1}, size, idx, v0, v1, v2, v3);",
+          pattern.ops[0]->getOperand(0),
+          getOffset(pattern.ops[0])).str());
+        break;
+
+      default:
+        // Handle other patterns
+        break;
     }
+  }
+
+  std::string getOperandName(Value val) {
+    if (auto defOp = val.getDefiningOp()) {
+      return defOp->getName().str();
+    }
+    return "unknown";
+  }
+
+  int getMixIndex(const ComputationPattern& pattern) {
+    // Implementation depends on your mix index allocation
+    return 0;
+  }
+
+  int getOffset(Operation* op) {
+    if (auto attr = op->getAttrOfType<IntegerAttr>("offset")) {
+      return attr.getUInt();
+    }
+    return 0;
+  }
   }
 
   mustache openTemplate(const std::string& path) {
