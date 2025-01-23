@@ -180,16 +180,10 @@ private:
 
       if (!declsOnly) {
         // Generate full function implementation
-        std::stringstream impl;
-        impl << proto << " {\n";
-        impl << "  return Fp(";
-
-        // Get polynomial coefficients for this power
-        auto coeff = powers[i];
-        impl << coeff;  // Assuming coeff is a single value that can be streamed
-
-        impl << ");\n}\n";
-        funcs.push_back(impl.str());
+        std::string impl = proto + " {\n";
+        impl += "  return x;\n";  // Simple placeholder implementation
+        impl += "}\n";
+        funcs.push_back(impl);
       }
     }
   }
