@@ -53,20 +53,21 @@ static cl::opt<std::string> inputFilename(cl::Positional,
                                           cl::Required);
 
 namespace {
+// 定义一个枚举类型 Action，用于表示不同的输出操作
 enum Action {
-  None,
-  PrintAST,
-  PrintZHL,
-  PrintZHLT,
-  OptimizeZHLT,
-  PrintZStruct,
-  PrintStepFuncs,
-  PrintLayoutType,
-  PrintLayoutAttr,
-  PrintRust,
-  PrintCpp,
-  PrintStats,
-  PrintPicus,
+  None,             // 不执行任何操作
+  PrintAST,         // 输出抽象语法树（AST）
+  PrintZHL,         // 输出未类型化的高层次 Zirgen IR，IR stands for Intermediate Representation
+  PrintZHLT,        // 输出类型化的高层次 Zirgen IR
+  OptimizeZHLT,     // 输出优化后的高层次 IR
+  PrintZStruct,     // 输出语义降级后的 Zirgen IR
+  PrintStepFuncs,   // 输出降级到 StepFuncOps 后的 IR
+  PrintLayoutType,  // 以 HTML 格式输出电路布局类型的结构
+  PrintLayoutAttr,  // 以文本格式输出生成的布局属性内容
+  PrintRust,        // 输出生成的 Rust 代码
+  PrintCpp,         // 输出生成的 C++ 代码
+  PrintStats,       // 显示生成电路的统计信息
+  PrintPicus,       // 输出用于 Picus 确定性验证的代码
 };
 } // namespace
 
@@ -87,7 +88,20 @@ static cl::opt<enum Action> emitAction(
         clEnumValN(PrintStats, "stats", "Display statistics on generated circuit"),
         clEnumValN(PrintPicus, "picus", "Output code for determinism verification with Picus")));
 
+/*
+这段代码定义了一个命令行选项 includeDirs，用于添加包含路径。以下是每个部分的解释：
+static cl::list<std::string> includeDirs：定义了一个静态的命令行选项 includeDirs，它是一个字符串列表。
+"I"：指定了命令行选项的名称为 -I。
+cl::desc("Add include path")：提供了该选项的描述，即“添加包含路径”。
+cl::value_desc("path")：指定了该选项的值描述为“路径”。
+这段代码的作用是允许用户通过命令行参数 -I 来指定多个包含路径。
+*/
 static cl::list<std::string> includeDirs("I", cl::desc("Add include path"), cl::value_desc("path"));
+/*
+cl::opt 和 cl::list 是 LLVM 命令行选项解析库中的两个类，用于定义和处理命令行选项。
+cl::opt 用于定义单个命令行选项。以下是其语法解释
+static cl::list<std::string> includeDirs：定义了一个静态的命令行选项 includeDirs，它是一个字符串列表
+*/
 static cl::opt<bool> doTest("test", cl::desc("Run tests for the main module"));
 static cl::opt<bool> genValidity("validity",
                                  cl::desc("Generate validity polynomial evaluation functions"),
@@ -108,27 +122,38 @@ void openMainFile(llvm::SourceMgr& sourceManager, std::string filename) {
 }
 
 int main(int argc, char* argv[]) {
+  // 初始化 LLVM 环境
   llvm::InitLLVM y(argc, argv);
 
+  // 注册 Zirgen 通用选项
   zirgen::registerZirgenCommon();
+  // 注册运行测试的命令行选项
   zirgen::registerRunTestsCLOptions();
 
+  // 解析命令行选项
   cl::ParseCommandLineOptions(argc, argv, "zirgen compiler\n");
 
+  // 创建并注册 MLIR 方言
   mlir::DialectRegistry registry;
   zirgen::registerZirgenDialects(registry);
 
+  // 创建 MLIR 上下文并加载所有可用的方言
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
+  // 创建并设置源管理器
   llvm::SourceMgr sourceManager;
   sourceManager.setIncludeDirs(includeDirs);
   mlir::SourceMgrDiagnosticHandler sourceMgrHandler(sourceManager, &context);
+
+  // 打开主文件
   openMainFile(sourceManager, inputFilename);
 
+  // 创建并初始化解析器
   zirgen::dsl::Parser parser(sourceManager);
   parser.addPreamble(zirgen::Typing::getBuiltinPreamble());
 
+  // 解析模块
   auto ast = parser.parseModule();
   if (!ast) {
     const auto& errors = parser.getErrors();
@@ -139,26 +164,31 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // 输出 AST
   if (emitAction == Action::PrintAST) {
     ast->print(llvm::outs());
     return 0;
   }
 
+  // 降级到 ZHL 模块
   std::optional<mlir::ModuleOp> zhlModule = zirgen::dsl::lower(context, sourceManager, ast.get());
   if (!zhlModule) {
     return 1;
   }
 
+  // 输出 ZHL
   if (emitAction == Action::PrintZHL) {
     zhlModule->print(llvm::outs());
     return 0;
   }
 
+  // 类型检查
   std::optional<mlir::ModuleOp> typedModule = zirgen::Typing::typeCheck(context, zhlModule.value());
   if (!typedModule) {
     return 1;
   }
 
+  // 创建并配置 Pass 管理器
   mlir::PassManager pm(&context);
   applyDefaultTimingPassManagerCLOptions(pm);
   if (failed(applyPassManagerCLOptions(pm))) {
@@ -168,24 +198,21 @@ int main(int argc, char* argv[]) {
   pm.enableVerifier(true);
   zirgen::addAccumAndGlobalPasses(pm);
 
+  // 运行 Pass 管理器
   if (failed(pm.run(typedModule.value()))) {
     llvm::errs() << "an internal compiler error ocurred while type checking this module:\n";
     typedModule->print(llvm::errs());
     return 1;
   }
 
+  // 输出 ZHLT
   if (emitAction == Action::PrintZHLT) {
     typedModule->print(llvm::outs());
     return 0;
   }
 
+  // 清除并重新配置 Pass 管理器
   pm.clear();
-  // TODO: HoistAllocs is failing
-  // pm.addPass(zirgen::Zhlt::createHoistAllocsPass());
-  // TODO: Optimize layout is currently disabled to make layout of components
-  // contigious for preflight, consider re-adding once preflight correctly uses
-  // layout output.
-  // pm.addPass(zirgen::ZStruct::createOptimizeLayoutPass());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
   if (failed(pm.run(typedModule.value()))) {
@@ -194,16 +221,19 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // 输出优化后的 ZHLT
   if (emitAction == Action::OptimizeZHLT) {
     typedModule->print(llvm::outs());
     return 0;
   }
 
+  // 输出 Picus 代码
   if (emitAction == Action::PrintPicus) {
     printPicus(*typedModule, llvm::outs());
     return 0;
   }
 
+  // 清除并重新配置 Pass 管理器
   pm.clear();
   if (!doTest)
     pm.addPass(zirgen::Zhlt::createStripTestsPass());
@@ -232,7 +262,6 @@ int main(int argc, char* argv[]) {
   pm.addPass(mlir::createSymbolDCEPass());
 
   if (genValidity && !doTest) {
-    // TODO: Convert test framework to pass buffers as arguments
     pm.nest<zirgen::Zhlt::ValidityRegsFuncOp>().addPass(zirgen::ZStruct::createBuffersToArgsPass());
     pm.nest<zirgen::Zhlt::ValidityTapsFuncOp>().addPass(zirgen::ZStruct::createBuffersToArgsPass());
   }
@@ -247,6 +276,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // 输出布局类型
   if (emitAction == Action::PrintLayoutType) {
     if (auto topFunc = typedModule->lookupSymbol<zirgen::Zhlt::ExecFuncOp>("exec$Top")) {
       std::stringstream ss;
@@ -268,20 +298,20 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
+  // 输出统计信息
   if (emitAction == Action::PrintStats) {
     zirgen::dsl::printStats(*typedModule);
     return 0;
   }
 
+  // 运行测试
   if (doTest) {
     return zirgen::runTests(*typedModule);
   }
 
-  // To generate code for step functions, we copy our module, flatten step functions and move the
-  // buffers to arguments.
+  // ���成步骤函数代码
   pm.clear();
   mlir::ModuleOp stepFuncs = typedModule->clone();
-  // Privatize everything that we don't need, and make everything into step functions.
   pm.addPass(zirgen::Zhlt::createLowerStepFuncsPass());
   pm.addPass(zirgen::ZStruct::createBuffersToArgsPass());
   pm.addPass(mlir::createCanonicalizerPass());
@@ -294,11 +324,13 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // 输出步骤函数
   if (emitAction == Action::PrintStepFuncs) {
     stepFuncs.print(llvm::outs());
     return 0;
   }
 
+  // 输出生成的 Rust 或 C++ 代码
   if (emitAction == Action::PrintRust || emitAction == Action::PrintCpp) {
     codegen::CodegenOptions codegenOpts = (emitAction == Action::PrintRust)
                                               ? codegen::getRustCodegenOpts()
