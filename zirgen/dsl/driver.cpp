@@ -147,56 +147,63 @@ int main(int argc, char* argv[]) {
   mlir::SourceMgrDiagnosticHandler sourceMgrHandler(sourceManager, &context);
 
   // 打开主文件
-  openMainFile(sourceManager, inputFilename);
+  openMainFile(sourceManager, inputFilename); // 打开主文件
+  // 打印 inputFilename
+  printf("inputFilename: %s\n", inputFilename.c_str());
+
 
   // 创建并初始化解析器
   zirgen::dsl::Parser parser(sourceManager);
-  parser.addPreamble(zirgen::Typing::getBuiltinPreamble());
+  parser.addPreamble(zirgen::Typing::getBuiltinPreamble()); // 添加内置前导代码
 
   // 解析模块
-  auto ast = parser.parseModule();
-  if (!ast) {
-    const auto& errors = parser.getErrors();
+  auto ast = parser.parseModule(); // 解析模块并生成抽象语法树（AST）
+  if (!ast) { // 如果解析失败
+    const auto& errors = parser.getErrors(); // 获取解析错误信息
     for (const auto& error : errors) {
-      sourceManager.PrintMessage(llvm::errs(), error);
+      sourceManager.PrintMessage(llvm::errs(), error); // 打印每个错误信息
     }
-    llvm::errs() << "parsing failed with " << errors.size() << " errors\n";
-    return 1;
+    llvm::errs() << "parsing failed with " << errors.size() << " errors\n"; // 打印解析失败的错误数量
+    return 1; // 返回错误代码 1
   }
 
   // 输出 AST
   if (emitAction == Action::PrintAST) {
-    ast->print(llvm::outs());
+    ast->print(llvm::outs()); // 打印 AST 到标准输出
     return 0;
   }
 
+
   // 降级到 ZHL 模块
-  std::optional<mlir::ModuleOp> zhlModule = zirgen::dsl::lower(context, sourceManager, ast.get());
-  if (!zhlModule) {
+  std::optional<mlir::ModuleOp> zhlModule = zirgen::dsl::lower(context, sourceManager, ast.get()); // 将 AST 降级到 ZHL 模块
+  if (!zhlModule) { // 如果降级失败
     return 1;
   }
 
   // 输出 ZHL
   if (emitAction == Action::PrintZHL) {
-    zhlModule->print(llvm::outs());
+    zhlModule->print(llvm::outs()); // 打印 ZHL 到标准输出
     return 0;
   }
 
   // 类型检查
-  std::optional<mlir::ModuleOp> typedModule = zirgen::Typing::typeCheck(context, zhlModule.value());
-  if (!typedModule) {
+  std::optional<mlir::ModuleOp> typedModule = zirgen::Typing::typeCheck(context, zhlModule.value()); // 对 ZHL 模块进行类型检查
+  if (!typedModule) { // 如果类型检查失败
     return 1;
   }
-
+ /*
+ PassManager 是 MLIR（Multi-Level Intermediate Representation）框架中的一个核心组件，用于管理和执行
+ 一系列的编译优化和转换 Pass。它的主要作用是组织和调度这些 Pass，以便在编译过程中对中间表示（IR）进行各种优化和转换。
+ */
   // 创建并配置 Pass 管理器
-  mlir::PassManager pm(&context);
-  applyDefaultTimingPassManagerCLOptions(pm);
-  if (failed(applyPassManagerCLOptions(pm))) {
-    llvm::errs() << "Pass manager does not agree with command line options.\n";
+  mlir::PassManager pm(&context); // 创建 Pass 管理器
+  applyDefaultTimingPassManagerCLOptions(pm); // 应用默认的 Pass 管理器命令行选项
+  if (failed(applyPassManagerCLOptions(pm))) { // 如果应用命令行选项失败
+    llvm::errs() << "Pass manager does not agree with command line options.\n"; // 打印错误信息
     return 1;
   }
-  pm.enableVerifier(true);
-  zirgen::addAccumAndGlobalPasses(pm);
+  pm.enableVerifier(true); // 启用验证器
+  zirgen::addAccumAndGlobalPasses(pm); // 添加累积和全局 Pass
 
   // 运行 Pass 管理器
   if (failed(pm.run(typedModule.value()))) {
@@ -226,7 +233,9 @@ int main(int argc, char* argv[]) {
     typedModule->print(llvm::outs());
     return 0;
   }
-
+  /*
+  Picus 是 Zirgen 编译器中的一个工具，用于确定性验证。它的主要作用是确保生成的代码在不同的执行环境中具有一致的行为，从而保证代码的确定性
+  */
   // 输出 Picus 代码
   if (emitAction == Action::PrintPicus) {
     printPicus(*typedModule, llvm::outs());
@@ -234,41 +243,41 @@ int main(int argc, char* argv[]) {
   }
 
   // 清除并重新配置 Pass 管理器
-  pm.clear();
+  pm.clear(); // 清除 Pass 管理器中的所有 Pass
   if (!doTest)
-    pm.addPass(zirgen::Zhlt::createStripTestsPass());
-  zirgen::addTypingPasses(pm);
+    pm.addPass(zirgen::Zhlt::createStripTestsPass()); // 如果不运行测试，添加 StripTestsPass
+  zirgen::addTypingPasses(pm); // 添加类型检查相关的 Pass
 
-  pm.addPass(zirgen::dsl::createGenerateCheckPass());
-  if (genValidity) {
-    pm.addPass(zirgen::dsl::createGenerateTapsPass());
-    pm.addPass(zirgen::dsl::createGenerateValidityRegsPass());
-    pm.addPass(zirgen::dsl::createGenerateValidityTapsPass());
+  pm.addPass(zirgen::dsl::createGenerateCheckPass()); // 添加生成检查函数的 Pass
+  if (genValidity) { // 如果需要生成有效性多项式
+    pm.addPass(zirgen::dsl::createGenerateTapsPass()); // 添加生成 Taps 的 Pass
+    pm.addPass(zirgen::dsl::createGenerateValidityRegsPass()); // 添加生成有效性寄存器的 Pass
+    pm.addPass(zirgen::dsl::createGenerateValidityTapsPass()); // 添加生成有效性 Taps 的 Pass
   }
-  pm.addPass(zirgen::dsl::createElideTrivialStructsPass());
-  pm.addPass(zirgen::ZStruct::createExpandLayoutPass());
+  pm.addPass(zirgen::dsl::createElideTrivialStructsPass()); // 添加消除简单结构体的 Pass
+  pm.addPass(zirgen::ZStruct::createExpandLayoutPass()); // 添加展开布局的 Pass
 
-  if (inlineLayout) {
-    pm.nest<zirgen::Zhlt::CheckFuncOp>().addPass(zirgen::ZStruct::createInlineLayoutPass());
-    if (genValidity) {
+  if (inlineLayout) { // 如果需要内联布局
+    pm.nest<zirgen::Zhlt::CheckFuncOp>().addPass(zirgen::ZStruct::createInlineLayoutPass()); // 在 CheckFuncOp 中添加内联布局的 Pass
+    if (genValidity) { // 如果���要生成有效性多项式
       pm.nest<zirgen::Zhlt::ValidityRegsFuncOp>().addPass(
-          zirgen::ZStruct::createInlineLayoutPass());
+          zirgen::ZStruct::createInlineLayoutPass()); // 在 ValidityRegsFuncOp 中添加内联布局的 Pass
       pm.nest<zirgen::Zhlt::ValidityTapsFuncOp>().addPass(
-          zirgen::ZStruct::createInlineLayoutPass());
+          zirgen::ZStruct::createInlineLayoutPass()); // 在 ValidityTapsFuncOp 中添加内联布局的 Pass
     }
   }
 
-  pm.addPass(mlir::createCanonicalizerPass());
-  pm.addPass(mlir::createSymbolDCEPass());
+  pm.addPass(mlir::createCanonicalizerPass()); // 添加规范化 Pass
+  pm.addPass(mlir::createSymbolDCEPass()); // 添加符号死代码消除 Pass
 
-  if (genValidity && !doTest) {
-    pm.nest<zirgen::Zhlt::ValidityRegsFuncOp>().addPass(zirgen::ZStruct::createBuffersToArgsPass());
-    pm.nest<zirgen::Zhlt::ValidityTapsFuncOp>().addPass(zirgen::ZStruct::createBuffersToArgsPass());
+  if (genValidity && !doTest) { // 如果需要生成有效性多项式且不运行测试
+    pm.nest<zirgen::Zhlt::ValidityRegsFuncOp>().addPass(zirgen::ZStruct::createBuffersToArgsPass()); // 在 ValidityRegsFuncOp 中添加 BuffersToArgs Pass
+    pm.nest<zirgen::Zhlt::ValidityTapsFuncOp>().addPass(zirgen::ZStruct::createBuffersToArgsPass()); // 在 ValidityTapsFuncOp 中添加 BuffersToArgs Pass
   }
-  if (failed(pm.run(typedModule.value()))) {
-    llvm::errs() << "an internal compiler error occurred while lowering this module:\n";
-    typedModule->print(llvm::errs());
-    return 1;
+  if (failed(pm.run(typedModule.value()))) { // 运行 Pass 管理器，如果失败
+    llvm::errs() << "an internal compiler error occurred while lowering this module:\n"; // 打印内部编译器错误信息
+    typedModule->print(llvm::errs()); // 打印模块的错误信息
+    return 1; // 返回错误代码 1
   }
 
   if (failed(zirgen::checkDegreeExceeded(*typedModule, maxDegree))) {
@@ -281,69 +290,73 @@ int main(int argc, char* argv[]) {
     if (auto topFunc = typedModule->lookupSymbol<zirgen::Zhlt::ExecFuncOp>("exec$Top")) {
       std::stringstream ss;
       mlir::Type lt = topFunc.getLayoutType();
-      zirgen::layout::viz::layoutSizes(lt, ss);
-      llvm::outs() << ss.str();
+      zirgen::layout::viz::layoutSizes(lt, ss); // 获取布局大小信息并写入字符串流
+      llvm::outs() << ss.str(); // 输出布局大小信息
       return 0;
     } else {
-      llvm::errs() << "error: circuit contains no component named `Top`\n";
+      llvm::errs() << "error: circuit contains no component named `Top`\n"; // 错误：电路中没有名为 `Top` 的组件
       return 1;
     }
   } else if (emitAction == Action::PrintLayoutAttr) {
     std::stringstream ss;
-    zirgen::layout::viz::layoutAttrs(*typedModule, ss);
-    llvm::outs() << ss.str();
+    zirgen::layout::viz::layoutAttrs(*typedModule, ss); // 获取布局属性信息并写入字符串流
+    llvm::outs() << ss.str(); // 输出布局属性信息
     return 0;
   } else if (emitAction == Action::PrintZStruct) {
-    typedModule->print(llvm::outs());
+    typedModule->print(llvm::outs()); // 输出语义降级后的 Zirgen IR
     return 0;
   }
 
   // 输出统计信息
   if (emitAction == Action::PrintStats) {
-    zirgen::dsl::printStats(*typedModule);
+    zirgen::dsl::printStats(*typedModule); // 打印生成电路的统计信息
     return 0;
   }
-
+  //zirgen::dsl::printStats(*typedModule); // 打印生成电路的统计信息
   // 运行测试
   if (doTest) {
-    return zirgen::runTests(*typedModule);
+    return zirgen::runTests(*typedModule); // 运行测试
   }
 
-  // ���成步骤函数代码
-  pm.clear();
-  mlir::ModuleOp stepFuncs = typedModule->clone();
-  pm.addPass(zirgen::Zhlt::createLowerStepFuncsPass());
-  pm.addPass(zirgen::ZStruct::createBuffersToArgsPass());
-  pm.addPass(mlir::createCanonicalizerPass());
-  pm.addPass(mlir::createSymbolPrivatizePass(/*excludeSymbols=*/{"step$Top", "step$Top$accum"}));
-  pm.addPass(mlir::createSymbolDCEPass());
+  // 生成步骤函数代码
+  pm.clear(); // 清除 Pass 管理器中的所有 Pass
+  mlir::ModuleOp stepFuncs = typedModule->clone(); // 克隆类型化模块
+  pm.addPass(zirgen::Zhlt::createLowerStepFuncsPass()); // 添加降级到 StepFuncOps 的 Pass
+  pm.addPass(zirgen::ZStruct::createBuffersToArgsPass()); // 添加 BuffersToArgs Pass
+  pm.addPass(mlir::createCanonicalizerPass()); // 添加规范化 Pass
+  pm.addPass(mlir::createSymbolPrivatizePass(/*excludeSymbols=*/{"step$Top", "step$Top$accum"})); // 添加符号私有化 Pass，排除特定符号
+  pm.addPass(mlir::createSymbolDCEPass()); // 添加符号死代码消除 Pass
 
-  if (failed(pm.run(stepFuncs))) {
-    llvm::errs() << "an internal compiler error occurred while lowering this module:\n";
-    stepFuncs.print(llvm::errs());
-    return 1;
+  if (failed(pm.run(stepFuncs))) { // 运行 Pass 管理器，如果失败
+    llvm::errs() << "an internal compiler error occurred while lowering this module:\n"; // 打印内部编译器错误信息
+    stepFuncs.print(llvm::errs()); // 打印模块的错误信息
+    return 1; // 返回错误代码 1
   }
 
   // 输出步骤函数
   if (emitAction == Action::PrintStepFuncs) {
-    stepFuncs.print(llvm::outs());
+    stepFuncs.print(llvm::outs()); // 输出步骤函数
     return 0;
   }
+  //stepFuncs.print(llvm::outs());
 
   // 输出生成的 Rust 或 C++ 代码
   if (emitAction == Action::PrintRust || emitAction == Action::PrintCpp) {
     codegen::CodegenOptions codegenOpts = (emitAction == Action::PrintRust)
-                                              ? codegen::getRustCodegenOpts()
-                                              : codegen::getCppCodegenOpts();
-    zirgen::codegen::CodegenEmitter emitter(codegenOpts, &llvm::outs(), &context);
-    if (zirgen::Zhlt::emitModule(stepFuncs, emitter).failed()) {
-      llvm::errs() << "Failed to emit step functions\n";
+                                              ? codegen::getRustCodegenOpts() // 获取 Rust 代码生成选项
+                                              : codegen::getCppCodegenOpts(); // 获取 C++ 代码生成选项
+
+    //CodegenEmitter 的主要作用是负责将中间表示（IR）生成目标代码（如 Rust 或 C++ 代码）。
+    //它根据指定的代码生成选项，将经过编译和优化的中间表示转换为可执行的目标代码或源代码文件。
+    zirgen::codegen::CodegenEmitter emitter(codegenOpts, &llvm::outs(), &context); // 创建代码生成发射器
+    if (zirgen::Zhlt::emitModule(stepFuncs, emitter).failed()) { // 生成模块代码，如果失败
+      llvm::errs() << "Failed to emit step functions\n"; // 打印生成步骤函数失败信息
       return 1;
     }
 
     for (auto& op : *typedModule) {
       if (llvm::isa<zirgen::Zhlt::ValidityRegsFuncOp, zirgen::Zhlt::ValidityTapsFuncOp>(op))
-        emitter.emitTopLevel(&op);
+        emitter.emitTopLevel(&op); // 输出顶层操作
     }
   }
 
