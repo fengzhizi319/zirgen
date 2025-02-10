@@ -420,34 +420,46 @@ pub fn exec_cycle_counter<'a>(
     global1: BufferRow<Val>,
 ) -> Result<CycleCounterStruct<'a>> {
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:28)
+    // 绑定全局布局到全局缓冲区
     let x2: BoundLayout<_globalLayout, _> = bind_layout!(LAYOUT_GLOBAL, global1);
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:29)
+    // 执行 NondetReg 寄存器操作，初始化 total_cycles 寄存器为 6
     let x3: NondetRegStruct = exec_nondet_reg(ctx, Val::new(6), (x2.map(|c| c.total_cycles)))?;
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:31)
+    // 获取当前周期
     let x4: GetCycleStruct = exec_get_cycle(ctx)?;
+    // 执行 NondetReg 寄存器操作，将当前周期存储到寄存器中
     let x5: NondetRegStruct = exec_nondet_reg(ctx, x4._super, (layout0.map(|c| c._super)))?;
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:32)
+    // 执行零检测操作，判断是否为第一个周期
     let x6: IsZeroStruct = exec_is_zero(ctx, x5._super, (layout0.map(|c| c.is_first_cycle)))?;
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:34)
+    // 执行减法操作，计算是否为第一个周期
     let x7: Val = exec_sub(ctx, Val::new(1), x6._super._super)?;
     let x8: ComponentStruct;
     if is_true(x6._super._super) {
+        // 如果是第一个周期，执行组件操作
         let x9: ComponentStruct = exec_component(ctx)?;
         x8 = x9;
     } else if is_true(x7) {
         // CycleCounter(zirgen/dsl/examples/fibonacci.zir:39)
+        // 如果不是第一个周期，回溯 NondetReg 寄存器
         let x10: NondetRegStruct = back_nondet_reg(ctx, 1, (layout0.map(|c| c._super)))?;
+        // 执行加法操作，将回溯的寄存器值加 1
         let x11: Val = exec_add(ctx, x10._super, Val::new(1))?;
+        // 检查寄存器值是否正确
         eqz!(
             (x5._super - x11),
             "CycleCounter(zirgen/dsl/examples/fibonacci.zir:39)"
         );
         // CycleCounter(zirgen/dsl/examples/fibonacci.zir:37)
+        // 执行组件操作
         let x12: ComponentStruct = exec_component(ctx)?;
         x8 = x12;
     } else {
         bail!("Reached unreachable mux arm")
     }
+    // 返回周期计数器结构
     return Ok(CycleCounterStruct {
         _super: x5,
         cycle: x5,
@@ -461,68 +473,92 @@ pub fn exec_top<'a>(
     global1: BufferRow<Val>,
 ) -> Result<TopStruct<'a>> {
     // Top(zirgen/dsl/examples/fibonacci.zir:44)
+    // 绑定全局布局到全局缓冲区
     let x2: BoundLayout<_globalLayout, _> = bind_layout!(LAYOUT_GLOBAL, global1);
     // Top(zirgen/dsl/examples/fibonacci.zir:49)
+    // 执行周期计数器
     let x3: CycleCounterStruct = exec_cycle_counter(ctx, (layout0.map(|c| c.cycle)), global1)?;
     // Top(zirgen/dsl/examples/fibonacci.zir:55)
+    // 执行减法操作，计算是否为第一个周期
     let x4: Val = exec_sub(ctx, Val::new(1), x3.is_first_cycle._super._super)?;
     let x5: RegStruct;
     if is_true(x3.is_first_cycle._super._super) {
         // Top(zirgen/dsl/examples/fibonacci.zir:45)
+        // 调用 back_reg 函数，使用上下文 ctx 和全局布局 x2 中的 f0 寄存器布局，回溯寄存器的值并将结果存储在 x6 变量中。
+        //x2.map(|c| c.f0)：从全局布局 x2 中获取 f0 寄存器的布局
         let x6: RegStruct = back_reg(ctx, 0, (x2.map(|c| c.f0)))?;
         x5 = x6;
     } else if is_true(x4) {
         // Top(zirgen/dsl/examples/fibonacci.zir:55)
+        // 回溯寄存器 d2
         let x7: RegStruct = back_reg(ctx, 1, (layout0.map(|c| c.d2)))?;
         x5 = x7;
     } else {
         bail!("Reached unreachable mux arm")
     }
+    // 执行寄存器操作
     let x8: RegStruct = exec_reg(ctx, x5._super._super, (layout0.map(|c| c.d1)))?;
     // Top(zirgen/dsl/examples/fibonacci.zir:56)
+    // 执行减法操作，计算是否为第一个周期
     let x9: Val = exec_sub(ctx, Val::new(1), x3.is_first_cycle._super._super)?;
     let x10: RegStruct;
     if is_true(x3.is_first_cycle._super._super) {
         // Top(zirgen/dsl/examples/fibonacci.zir:46)
+        // 回溯寄存器 f1
         let x11: RegStruct = back_reg(ctx, 0, (x2.map(|c| c.f1)))?;
         x10 = x11;
     } else if is_true(x9) {
         // Top(zirgen/dsl/examples/fibonacci.zir:56)
+        // 回溯寄存器 d3
         let x12: RegStruct = back_reg(ctx, 1, (layout0.map(|c| c.d3)))?;
         x10 = x12;
     } else {
         bail!("Reached unreachable mux arm")
     }
+    // 执行寄存器操作
     let x13: RegStruct = exec_reg(ctx, x10._super._super, (layout0.map(|c| c.d2)))?;
     // Top(zirgen/dsl/examples/fibonacci.zir:59)
+    // 执行加法操作
     let x14: Val = exec_add(ctx, x8._super._super, x13._super._super)?;
+    // 执行寄存器操作
     let x15: RegStruct = exec_reg(ctx, x14, (layout0.map(|c| c.d3)))?;
     // Top(zirgen/dsl/examples/fibonacci.zir:47)
+    // 回溯寄存器 steps
     let x16: RegStruct = back_reg(ctx, 0, (x2.map(|c| c.steps)))?;
     // Top(zirgen/dsl/examples/fibonacci.zir:62)
+    // 执行减法操作
     let x17: Val = exec_sub(ctx, x3._super._super, x16._super._super)?;
+    // 执行加法操作
     let x18: Val = exec_add(ctx, x17, Val::new(1))?;
+    // 执行零检测操作
     let x19: IsZeroStruct = exec_is_zero(ctx, x18, (layout0.map(|c| c.terminate)))?;
     // Top(zirgen/dsl/examples/fibonacci.zir:63)
+    // 执行减法操作
     let x20: Val = exec_sub(ctx, Val::new(1), x19._super._super)?;
     let x21: ComponentStruct;
     if is_true(x19._super._super) {
         // Top(zirgen/dsl/examples/fibonacci.zir:64)
+        // 执行寄存器操作
         let x22: RegStruct = exec_reg(ctx, x15._super._super, (x2.map(|c| c.f_last)))?;
+        // 回溯寄存器 f_last
         let x23: RegStruct = back_reg(ctx, 0, (x2.map(|c| c.f_last)))?;
         // Top(zirgen/dsl/examples/fibonacci.zir:65)
+        // 执行日志操作
         let x24: [Val] = [x23._super._super];
         let x25: ComponentStruct = exec_log(ctx, "f_last = %u", &x24)?;
         // Top(zirgen/dsl/examples/fibonacci.zir:63)
+        // 执行组件操作
         let x26: ComponentStruct = exec_component(ctx)?;
         x21 = x26;
     } else if is_true(x20) {
         // Top(zirgen/dsl/examples/fibonacci.zir:66)
+        // 执行组件操作
         let x27: ComponentStruct = exec_component(ctx)?;
         x21 = x27;
     } else {
         bail!("Reached unreachable mux arm")
     } // Top(zirgen/dsl/examples/fibonacci.zir:44)
+    // 执行组件操作
     let x28: ComponentStruct = exec_component(ctx)?;
     return Ok(TopStruct {
         _super: x28,
@@ -540,16 +576,20 @@ pub fn step_top<'a>(
     data0: BufferRow<Val>,
     global1: BufferRow<Val>,
 ) -> Result<()> {
+    // 绑定全局布局到全局缓冲区
     let x2: BoundLayout<TopLayout, _> = bind_layout!(LAYOUT_TOP, data0);
+    // 执行顶层结构
     let x3: TopStruct = exec_top(ctx, x2, global1)?;
     return Ok(());
 }
+
 pub fn validity_taps<'a>(
     ctx: &'a ValidityTapsContext,
     taps0: BufferRow<ExtVal>,
     poly_mix1: PolyMix,
     global2: BufferRow<Val>,
 ) -> Result<MixState> {
+    // 获取 Tap 缓冲区中的值
     let x3: ExtVal = get(ctx, taps0, 2, 0)?;
     let x4: ExtVal = get(ctx, taps0, 4, 0)?;
     let x5: ExtVal = get(ctx, taps0, 5, 0)?;
@@ -560,19 +600,26 @@ pub fn validity_taps<'a>(
     let x10: ExtVal = get(ctx, taps0, 12, 0)?;
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:34)
     // Top(zirgen/dsl/examples/fibonacci.zir:49)
+    // 初始化 MixState
     let x11: MixState = trivial_constraint()?;
+    // 绑定全局布局到全局缓冲区
     let x12: BoundLayout<_globalLayout, _> = bind_layout!(LAYOUT_GLOBAL, global2);
     // Top(zirgen/dsl/examples/fibonacci.zir:62)
+    // 计算步骤寄存器的值
     let x13: ExtVal = ((x3 - ((x12.map(|c| c.steps)).map(|c| c._super)).load(ctx, 0))
         + ExtVal::new(Val::new(1), Val::new(0), Val::new(0), Val::new(0)));
     // IsZero(zirgen/dsl/examples/fibonacci.zir:12)
+    // 计算零检测结果
     let x14: ExtVal = (ExtVal::new(Val::new(1), Val::new(0), Val::new(0), Val::new(0)) - x9);
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:32)
     // Top(zirgen/dsl/examples/fibonacci.zir:49)
+    // 计算周期计数器的值
     let x15: ExtVal = (ExtVal::new(Val::new(1), Val::new(0), Val::new(0), Val::new(0)) - x4);
     // IsZero(zirgen/dsl/examples/fibonacci.zir:14)
+    // 检查零检测结果
     let x16: MixState = and_eqz_ext(ctx, and_eqz_ext(ctx, x11, (x4 * x15))?, ((x3 * x5) - x15))?;
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:34)
+    // 检查周期计数器的值
     let x17: MixState = and_cond_ext(
         and_eqz_ext(ctx, and_eqz_ext(ctx, x16, (x4 * x3))?, (x4 * x5))?,
         x15,
@@ -584,10 +631,13 @@ pub fn validity_taps<'a>(
         )?,
     )?;
     // Top(zirgen/dsl/examples/fibonacci.zir:55)
+    // 计算 f0 寄存器的值
     let x18: ExtVal = (((x12.map(|c| c.f0)).map(|c| c._super)).load_unchecked(ctx, 0) * x4);
     // Top(zirgen/dsl/examples/fibonacci.zir:56)
+    // 计算 f1 寄存器的值
     let x19: ExtVal = (((x12.map(|c| c.f1)).map(|c| c._super)).load_unchecked(ctx, 0) * x4);
     // Reg(<preamble>:5)
+    // 检查寄存器值
     let x20: MixState = and_eqz_ext(
         ctx,
         and_eqz_ext(ctx, x17, ((x18 + (get(ctx, taps0, 7, 0)? * x15)) - x8))?,
@@ -595,12 +645,14 @@ pub fn validity_taps<'a>(
     )?;
     // IsZero(zirgen/dsl/examples/fibonacci.zir:14)
     // Top(zirgen/dsl/examples/fibonacci.zir:62)
+    // 检查零检测结果
     let x21: MixState = and_eqz_ext(
         ctx,
         and_eqz_ext(ctx, and_eqz_ext(ctx, x20, ((x8 + x6) - x7))?, (x9 * x14))?,
         ((x13 * x10) - x14),
     )?;
     // Top(zirgen/dsl/examples/fibonacci.zir:63)
+    // 检查终止条件
     let x22: MixState = and_cond_ext(
         and_eqz_ext(ctx, and_eqz_ext(ctx, x21, (x9 * x13))?, (x9 * x10))?,
         x9,
@@ -618,104 +670,134 @@ pub fn validity_regs<'a>(
     data1: BufferRow<Val>,
     global2: BufferRow<Val>,
 ) -> Result<MixState> {
+    // 绑定顶层布局到数据缓冲区
     let x3: BoundLayout<TopLayout, _> = bind_layout!(LAYOUT_TOP, data1);
+    // 绑定全局布局到全局缓冲区
     let x4: BoundLayout<_globalLayout, _> = bind_layout!(LAYOUT_GLOBAL, global2);
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:39)
     // Top(zirgen/dsl/examples/fibonacci.zir:49)
+    // 加载周期计数器的值并加 1
     let x5: Val =
         ((((x3.map(|c| c.cycle)).map(|c| c._super)).map(|c| c._super)).load(ctx, 1) + Val::new(1));
+    // 计算当前周期与加载值的差
     let x6: Val = ((((x3.map(|c| c.cycle)).map(|c| c._super)).map(|c| c._super)).load(ctx, 0) - x5);
     // Top(zirgen/dsl/examples/fibonacci.zir:59)
+    // 加载 d1 和 d2 寄存器的值并相加
     let x7: Val = (((x3.map(|c| c.d1)).map(|c| c._super)).load(ctx, 0)
         + ((x3.map(|c| c.d2)).map(|c| c._super)).load(ctx, 0));
     // Top(zirgen/dsl/examples/fibonacci.zir:62)
+    // 计算当前周期与步骤寄存器的差并加 1
     let x8: Val = ((((x3.map(|c| c.cycle)).map(|c| c._super)).map(|c| c._super)).load(ctx, 0)
         - ((x4.map(|c| c.steps)).map(|c| c._super)).load(ctx, 0));
     let x9: Val = (x8 + Val::new(1));
     // IsZero(zirgen/dsl/examples/fibonacci.zir:12)
+    // 计算终止条件的反值
     let x10: Val = (Val::new(1)
         - (((x3.map(|c| c.terminate)).map(|c| c._super)).map(|c| c._super)).load(ctx, 0));
+    // 计算终止条件与其反值的乘积
     let x11: Val =
         ((((x3.map(|c| c.terminate)).map(|c| c._super)).map(|c| c._super)).load(ctx, 0) * x10);
     // IsZero(zirgen/dsl/examples/fibonacci.zir:14)
+    // 计算终止条件的反值
     let x12: Val = (Val::new(1)
         - (((x3.map(|c| c.terminate)).map(|c| c._super)).map(|c| c._super)).load(ctx, 0));
     // IsZero(zirgen/dsl/examples/fibonacci.zir:16)
+    // 计算终止条件与步骤寄存器的乘积
     let x13: Val =
         ((((x3.map(|c| c.terminate)).map(|c| c._super)).map(|c| c._super)).load(ctx, 0) * x9);
     // IsZero(zirgen/dsl/examples/fibonacci.zir:18)
+    // 计算终止条件与其逆元的乘积
     let x14: Val = ((((x3.map(|c| c.terminate)).map(|c| c._super)).map(|c| c._super)).load(ctx, 0)
         * (((x3.map(|c| c.terminate)).map(|c| c.inv)).map(|c| c._super)).load(ctx, 0));
     // Reg(<preamble>:5)
     // Top(zirgen/dsl/examples/fibonacci.zir:64)
+    // 计算 d3 寄存器与 f_last 寄存器的差
     let x15: Val = (((x3.map(|c| c.d3)).map(|c| c._super)).load(ctx, 0)
         - ((x4.map(|c| c.f_last)).map(|c| c._super)).load(ctx, 0));
     // IsZero(zirgen/dsl/examples/fibonacci.zir:12)
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:32)
     // Top(zirgen/dsl/examples/fibonacci.zir:49)
+    // 计算第一个周期的反值
     let x16: Val = (Val::new(1)
         - ((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c._super))
             .map(|c| c._super))
         .load(ctx, 0));
+    // 计算第一个周期与其反值的乘积
     let x17: Val = (((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c._super))
         .map(|c| c._super))
     .load(ctx, 0)
         * x16);
     // IsZero(zirgen/dsl/examples/fibonacci.zir:14)
+    // 计算第一个周期与其逆元的乘积
     let x18: Val = ((((x3.map(|c| c.cycle)).map(|c| c._super)).map(|c| c._super)).load(ctx, 0)
         * ((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c.inv)).map(|c| c._super))
             .load(ctx, 0));
+    // 计算第一个周期的反值
     let x19: Val = (Val::new(1)
         - ((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c._super))
             .map(|c| c._super))
         .load(ctx, 0));
+    // 计算 MixState
     let x20: MixState = and_eqz(ctx, and_eqz(ctx, trivial_constraint()?, x17)?, (x18 - x19))?;
     // IsZero(zirgen/dsl/examples/fibonacci.zir:16)
+    // 计算第一个周期与其父级的乘积
     let x21: Val = (((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c._super))
         .map(|c| c._super))
     .load(ctx, 0)
         * (((x3.map(|c| c.cycle)).map(|c| c._super)).map(|c| c._super)).load(ctx, 0));
     // IsZero(zirgen/dsl/examples/fibonacci.zir:18)
+    // 计算第一个周期与其逆元的乘积
     let x22: Val = (((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c._super))
         .map(|c| c._super))
     .load(ctx, 0)
         * ((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c.inv)).map(|c| c._super))
             .load(ctx, 0));
     // CycleCounter(zirgen/dsl/examples/fibonacci.zir:34)
+    // 计算第一个周期的反值
     let x23: Val = (Val::new(1)
         - ((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c._super))
             .map(|c| c._super))
         .load(ctx, 0));
+    // 计算 MixState
     let x24: MixState = and_cond(
         and_eqz(ctx, and_eqz(ctx, x20, x21)?, x22)?,
         x23,
         and_eqz(ctx, trivial_constraint()?, x6)?,
     )?;
     // Top(zirgen/dsl/examples/fibonacci.zir:55)
+    // 计算第一个周期的反值
     let x25: Val = (Val::new(1)
         - ((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c._super))
             .map(|c| c._super))
         .load(ctx, 0));
+    // 计算 f0 寄存器与第一个周期的乘积
     let x26: Val = (((x4.map(|c| c.f0)).map(|c| c._super)).load_unchecked(ctx, 0)
         * ((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c._super))
             .map(|c| c._super))
         .load(ctx, 0));
+    // 计算 d2 寄存器与第一个周期的反值的乘积
     let x27: Val = (((x3.map(|c| c.d2)).map(|c| c._super)).load_unchecked(ctx, 1) * x25);
     // Reg(<preamble>:5)
+    // 计算 f0 和 d2 寄存器的和与 d1 寄存器的差
     let x28: Val = ((x26 + x27) - ((x3.map(|c| c.d1)).map(|c| c._super)).load(ctx, 0));
     // Top(zirgen/dsl/examples/fibonacci.zir:56)
+    // 计算第一个周期的反值
     let x29: Val = (Val::new(1)
         - ((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c._super))
             .map(|c| c._super))
         .load(ctx, 0));
+    // 计算 f1 寄存器与第一个周期的乘积
     let x30: Val = (((x4.map(|c| c.f1)).map(|c| c._super)).load_unchecked(ctx, 0)
         * ((((x3.map(|c| c.cycle)).map(|c| c.is_first_cycle)).map(|c| c._super))
             .map(|c| c._super))
         .load(ctx, 0));
+    // 计算 d3 寄存器与第一个周期的反值的乘积
     let x31: Val = (((x3.map(|c| c.d3)).map(|c| c._super)).load_unchecked(ctx, 1) * x29);
     // Reg(<preamble>:5)
+    // 计算 f1 和 d3 寄存器的和与 d2 寄存器的差
     let x32: Val = ((x30 + x31) - ((x3.map(|c| c.d2)).map(|c| c._super)).load(ctx, 0));
     // Top(zirgen/dsl/examples/fibonacci.zir:59)
+    // 计算 MixState
     let x33: MixState = and_eqz(
         ctx,
         and_eqz(ctx, and_eqz(ctx, x24, x28)?, x32)?,
@@ -723,12 +805,14 @@ pub fn validity_regs<'a>(
     )?;
     // IsZero(zirgen/dsl/examples/fibonacci.zir:14)
     // Top(zirgen/dsl/examples/fibonacci.zir:62)
+    // 计算 MixState
     let x34: MixState = and_eqz(
         ctx,
         and_eqz(ctx, x33, x11)?,
         ((x9 * (((x3.map(|c| c.terminate)).map(|c| c.inv)).map(|c| c._super)).load(ctx, 0)) - x12),
     )?;
     // Top(zirgen/dsl/examples/fibonacci.zir:63)
+    // 计算 MixState
     let x35: MixState = and_cond(
         and_eqz(ctx, and_eqz(ctx, x34, x13)?, x14)?,
         (((x3.map(|c| c.terminate)).map(|c| c._super)).map(|c| c._super)).load(ctx, 0),
