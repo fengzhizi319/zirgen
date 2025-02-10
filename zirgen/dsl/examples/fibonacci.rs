@@ -1,5 +1,7 @@
-
+use risc0_zkp::layout::Reg;
 use risc0_zirgen_dsl::codegen::_support::{define_buffer_list, define_global_buffer, define_tap_buffer, isz, set_field};
+use risc0_zirgen_dsl::codegen::taps::Tap;
+
 // 设置字段类型为 BabyBear
 set_field!(BabyBear);
 
@@ -85,6 +87,15 @@ impl risc0_zkp::layout::Component for CycleCounterLayout {
 }
 
 // 定义 Tap13Array 类型
+/*
+Tap13Array 的主要功能是定义一个包含 13 个 Tap 元素的数组类型。
+在电路生成和验证过程中，这个数组用于存储和管理多个 Tap 数据。
+Tap 结构体包含了组、位置和回溯等信息，通过 Tap13Array 可以方便
+地访问和操作这些 Tap 数据。
+Tap 数据在电路生成和验证过程中起着关键作用。具体来说，Tap 数据用于存储和管理电路中不同位置的状态信息。
+每个 Tap 结构体包含了组、位置和回溯等信息，通过这些信息可以方便地访问和操作电路中的特定数据点。
+这样可以确保在电路执行过程中，能够准确地跟踪和验证每个步骤的状态和结果。
+ */
 pub type Tap13Array = [Tap; 13];
 
 // 定义 TopLayout 结构体
