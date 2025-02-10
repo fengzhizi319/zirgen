@@ -1,6 +1,9 @@
+use anyhow::bail;
 use risc0_zkp::layout::Reg;
-use risc0_zirgen_dsl::codegen::_support::{define_buffer_list, define_global_buffer, define_tap_buffer, isz, set_field};
-use risc0_zirgen_dsl::codegen::taps::Tap;
+use risc0_zirgen_dsl::codegen::_support::{bind_layout, define_buffer_list, define_global_buffer, define_tap_buffer, set_field};
+use risc0_zirgen_dsl::codegen::taps::{Tap,make_taps};
+use risc0_zirgen_dsl::codegen::_support::{make_tap,is_true,Index,trivial_constraint,layout_map,eqz,isz,get};
+use risc0_zirgen_dsl::{BoundLayout,BufferRow,};
 
 // 设置字段类型为 BabyBear
 set_field!(BabyBear);
