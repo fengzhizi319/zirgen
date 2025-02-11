@@ -422,18 +422,29 @@ std::vector<uint32_t> polySplit(mlir::func::FuncOp func) {
 }
 
 int main(int argc, char* argv[]) {
+  // Initialize LLVM environment
+  // 初始化 LLVM 环境
   llvm::InitLLVM y(argc, argv);
+
+  // Register command line options
+  // 注册命令行选项
   mlir::registerAsmPrinterCLOptions();
   mlir::registerMLIRContextCLOptions();
 
+  // Parse command line options
+  // 解析命令行选项
   llvm::cl::ParseCommandLineOptions(argc, argv, "bigint2c");
 
+  // Register MLIR dialects
+  // 注册 MLIR 方言
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect>();
   registry.insert<BigInt::BigIntDialect>();
   mlir::MLIRContext ctx(registry);
   ctx.loadAllAvailableDialects();
 
+  // Create module and builder
+  // 创建模块和构建器
   auto loc = mlir::UnknownLoc::get(&ctx);
   auto module = mlir::ModuleOp::create(loc);
   auto builder = mlir::OpBuilder(&ctx);
@@ -442,6 +453,8 @@ int main(int argc, char* argv[]) {
   auto func = builder.create<func::FuncOp>(loc, "bigint2", funcType);
   builder.setInsertionPointToStart(func.addEntryBlock());
 
+  // Generate the selected program based on command line options
+  // 根据命令行选项选择生成的程序
   switch (program) {
   case Program::ModPow65537:
     zirgen::BigInt::genModPow65537(builder, loc, bitwidth);
@@ -481,9 +494,12 @@ int main(int argc, char* argv[]) {
     break;
   }
 
+  // Create return operation
+  // 创建返回操作
   builder.create<func::ReturnOp>(loc);
 
-  // Remove reduce
+  // Remove reduce and apply optimization passes
+  // 移除多余的操作并进行优化
   PassManager pm(&ctx);
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
@@ -494,9 +510,12 @@ int main(int argc, char* argv[]) {
     throw std::runtime_error("Failed to apply basic optimization passes");
   }
 
+  // Convert function to polynomial representation
+  // 将函数转换为多项式表示
   std::vector<uint32_t> flat = polySplit(func);
 
-  // Write blob to stdout or output file as raw bytes.
+  // Write result to stdout or specified output file
+  // 将结果写入���准输出或指定的输出文件
   if (output.empty()) {
     llvm::support::endian::write_array(
         llvm::outs(), llvm::ArrayRef(flat), llvm::endianness::little);
