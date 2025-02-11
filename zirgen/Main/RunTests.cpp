@@ -260,61 +260,108 @@ LogicalResult verifyConstraints(Zll::Interpreter& interp, StringRef baseName, Mo
 
   return failed ? failure() : success();
 }
-
+/*
+主要流程：
+获取 MLIR 上下文。
+设置所有符号为私有。
+应用命令行选项到 Pass 管理器。
+启用验证器。
+添加 Pass。
+运行 Pass 管理器。
+清除 Pass 管理器。
+克隆模块。
+进行缓冲区分析。
+运行测试。
+分配缓冲区。
+创建外部处理器。
+运行测试。
+运行累积步骤。
+验证约束。
+打印累积器最终值。
+检查测试结果是否符合预期
+*/
 int runTests(mlir::ModuleOp module) {
+  // 获取 MLIR 上下文
   mlir::MLIRContext& context = *module.getContext();
-  // Set all the symbols to private
+
+  // 设置所有符号为私有
   mlir::PassManager pm(&context);
   applyDefaultTimingPassManagerCLOptions(pm);
+  //打印hello
+  llvm::outs() << "hello，lets do the megaeth test\n";
+
+  // 应用命令行选项到 Pass 管理器
   if (failed(applyPassManagerCLOptions(pm))) {
     llvm::errs() << "Pass manager does not agree with command line options.\n";
     return 1;
   }
+
+  // 启用验证器
   pm.enableVerifier(true);
+
+  // 添加 Pass
   pm.addPass(zirgen::dsl::createEraseUnusedAspectsPass(/*forTests=*/true));
   pm.addPass(mlir::createSymbolDCEPass());
   pm.addPass(mlir::createInlinerPass());
+
+  // 嵌套 Pass 管理器
   mlir::OpPassManager& opm = pm.nest<zirgen::Zhlt::StepFuncOp>();
   opm.addPass(zirgen::ZStruct::createUnrollPass());
-  // Canonicalization at this point seems to be unprofitable when running in the
-  // interpreter
-  // opm.addPass(mlir::createCanonicalizerPass());
   opm.addPass(mlir::createCSEPass());
+
+  // 运行 Pass 管理器
   if (failed(pm.run(module))) {
     llvm::errs() << "an internal compiler error occurred while inlining the tests:\n";
     module.print(llvm::errs());
     return 1;
   }
 
+  // 清除 Pass 管理器
   pm.clear();
+
+  // 克隆模块
   mlir::ModuleOp zllMod = module.clone();
   pm.nest<zirgen::Zhlt::CheckFuncOp>().addPass(zirgen::ZStruct::createInlineLayoutPass());
   pm.addPass(mlir::createCanonicalizerPass());
+
+  // 运行 Pass 管理器
   if (failed(pm.run(zllMod))) {
     llvm::errs() << "an internal compiler error occurred while inlining layouts:\n";
     module.print(llvm::errs());
     return 1;
   }
 
+  // 进行缓冲区分析
   zirgen::ZStruct::BufferAnalysis bufferAnalysis(module);
-  // Finally, run the tests
+
+  // 最后，运行测试
   for (zirgen::Zhlt::StepFuncOp stepFuncOp : module.getBody()->getOps<zirgen::Zhlt::StepFuncOp>()) {
+    // 获取操作的名称
+    //stepFuncOp.print(llvm::outs());
     llvm::StringRef baseName = stepFuncOp.getName();
+    //printf("baseName: %s\n", baseName.str().c_str());//step$test$succ$FirstCycle
+    // 移除名称前缀 "step$"
     baseName.consume_front("step$");
+    // 如果名称不以 "test$" 开头，则跳过此操作
     if (!baseName.starts_with("test$"))
       continue;
+    // 如果名称以 "$accum" 结尾，则跳过此操作
     if (baseName.ends_with("$accum"))
       continue;
+    // 检查名称是否以 "test$fail$" 开头，表示预期测试失败
     bool expectFailure = baseName.starts_with("test$fail$");
+    // 如果不预期失败，则断言名称以 "test$succ$" 开头，表示预期测试成功
     if (!expectFailure)
       assert(baseName.starts_with("test$succ$"));
-    llvm::StringRef testName =
-        baseName.drop_front(strlen("test$fail$") /* == strlen("test$succ$") */);
+    // 获取测试名称，移除前缀 "test$fail$" 或 "test$succ$"
+    llvm::StringRef testName = baseName.drop_front(strlen("test$fail$") /* == strlen("test$succ$") */);
+    // 打印正在运行的测试名称
     llvm::errs() << "Running " << testName << "\n";
 
+    // 创建解释器
     zirgen::Zll::Interpreter interp(&context);
 
-    // Allocate buffers
+    // 分配缓冲区
     using Polynomial = llvm::SmallVector<uint64_t, 4>;
     llvm::SmallVector<std::unique_ptr<std::vector<Polynomial>>> bufs;
     auto allBufs = Zll::lookupModuleAttr<Zll::BuffersAttr>(module).getBuffers();
@@ -335,16 +382,16 @@ int runTests(mlir::ModuleOp module) {
           newBuf->clear();
           newBuf->resize(bufDesc.getRegCount(), Polynomial(1, zirgen::Zll::kFieldInvalid));
           for (size_t i = 0; i < bufDesc.getRegCount(); i++) {
-            //            (*newBuf)[i][0] = static_cast<uint64_t>(distribution(generator));
             (*newBuf)[i][0] = i + 1;
           }
         }
       } else {
-        newBuf->resize(bufDesc.getRegCount() * clOpts->testCycles,
-                       Polynomial(1, zirgen::Zll::kFieldInvalid));
+        newBuf->resize(bufDesc.getRegCount() * clOpts->testCycles, Polynomial(1, zirgen::Zll::kFieldInvalid));
         interp.setNamedBuf(bufDesc.getName(), *newBuf, bufDesc.getRegCount());
       }
     }
+
+    // 创建外部处理器
     TestExternHandler testExterns;
     if (!clOpts->inputDataHex.empty() && !clOpts->inputDataFilename.empty()) {
       llvm::errs() << "Cannot specify both --input-data-file and --input-data-hex\n";
@@ -361,7 +408,8 @@ int runTests(mlir::ModuleOp module) {
     }
     interp.setExternHandler(&testExterns);
     interp.setSilenceErrors(expectFailure);
-    // interp.setDebug(true);
+
+    // 运行测试
     bool failed = false;
     size_t cycle = 0;
     std::string exceptionName;
@@ -377,19 +425,17 @@ int runTests(mlir::ModuleOp module) {
       llvm::errs() << "Lookups pending:\n";
       for (const auto& kvp : testExterns.lookups) {
         for (const auto& kvp2 : kvp.second) {
-          llvm::errs() << "  lookup table " << kvp.first << ", entry " << kvp2.first
-                       << ", value = " << kvp2.second << "\n";
+          llvm::errs() << "  lookup table " << kvp.first << ", entry " << kvp2.first << ", value = " << kvp2.second << "\n";
         }
       }
     } else {
       llvm::errs() << "Lookups resolved\n";
     }
 
-    // Run accum step for the test if there is one
+    // 运行累积步骤
     std::string name = (stepFuncOp.getName() + "$accum").str();
     auto accum = module.lookupSymbol<zirgen::Zhlt::StepFuncOp>(name);
     if (!failed && accum) {
-      // First, 'zero' any unset values in data
       for (auto [buf, bufDesc] : llvm::zip(bufs, allBufs)) {
         if (bufDesc.getName() == "test") {
           for (size_t i = 0; i < buf->size(); i++) {
@@ -411,6 +457,7 @@ int runTests(mlir::ModuleOp module) {
       }
     }
 
+    // 验证约束
     llvm::errs() << "Verifying constraints for " << testName << "\n";
     if (verifyConstraints(interp, baseName, module).failed()) {
       llvm::errs() << "Checking constraints failed\n";
@@ -422,12 +469,8 @@ int runTests(mlir::ModuleOp module) {
       failed = true;
     }
 
+    // 打印累积器最终值
     if (!failed && accum) {
-      // TODO: the accum code doesn't actually generate a constraint that the
-      // accumulator grand sum starts and ends at the same value... We can't do
-      // that until "circular constraints" work or the accum code generates extra
-      // major mux arms for initialization and finalization. In the meantime,
-      // print out the final accumulator sum so that we can assert on it in tests
       for (auto [buf, bufDesc] : llvm::zip(bufs, allBufs)) {
         if (bufDesc.getName() == "accum") {
           llvm::outs() << "final accum: [";
@@ -443,6 +486,7 @@ int runTests(mlir::ModuleOp module) {
       }
     }
 
+    // 检查测试结果是否符合预期
     if (failed != expectFailure) {
       if (!failed) {
         llvm::errs() << "Expected failure, but no failure found\n";
