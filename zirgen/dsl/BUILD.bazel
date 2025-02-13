@@ -27,7 +27,6 @@ cc_library(
         "@llvm-project//llvm:Support",
     ],
 )
-
 cc_binary(
     name = "zirgen",
     srcs = ["driver.cpp"],
@@ -40,4 +39,21 @@ cc_binary(
         "//zirgen/compiler/layout",
         "//zirgen/compiler/picus",
     ],
+)
+cc_binary(
+    name = "zirgen_helloworld",
+    srcs = ["driver.cpp"],
+    deps = [
+        "//risc0/core",
+        "//zirgen/Conversions/Typing",
+        "//zirgen/Dialect/ZHLT/IR:Codegen",
+        "//zirgen/Main",
+        "//zirgen/compiler/codegen",
+        "//zirgen/compiler/layout",
+        "//zirgen/compiler/picus",
+    ],
+    args = [
+            "/Users/charles/Documents/2zkvm/risc0/zirgen/zirgen/dsl/test/hello_world.zir",
+            "--test",
+        ],
 )
