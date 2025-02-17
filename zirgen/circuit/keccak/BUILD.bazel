@@ -14,10 +14,10 @@ KECCAK_ZIR_FILES = [
 
 glob_lit_tests(
     # TODO: shorten timeout once zirgen is faster
-    timeout = "long",
-    data = KECCAK_ZIR_FILES,
-    exclude = KECCAK_ZIR_FILES,
-    test_file_exts = ["zir"],
+    timeout = "long",  # 测试的超时时间为长
+    data = KECCAK_ZIR_FILES,  # 测试所需的数据文件列表
+    exclude = KECCAK_ZIR_FILES,  # 要排除在测试之外的文件列表
+    test_file_exts = ["zir"],  # 测试文件的扩展名为 "zir"
 )
 
 KECCAK_OUTS = ZIRGEN_OUTS + [
@@ -35,14 +35,14 @@ KECCAK_OUTS = ZIRGEN_OUTS + [
 ]
 
 build_circuit(
-    name = "keccak",
-    outs = KECCAK_OUTS,
-    bin = "//zirgen/Main:gen_zirgen",
-    data = KECCAK_ZIR_FILES,
-    extra_args = [
-        "zirgen/circuit/keccak/keccak.zir",
-        "-I",
-        "zirgen/circuit/keccak",
-        "--validity-split-count=5",
+    name = "keccak",  # 生成的电路目标的名称
+    outs = KECCAK_OUTS,  # 构建输出文件列表
+    bin = "//zirgen/Main:gen_zirgen",  # 用于生成电路的可执行文件
+    data = KECCAK_ZIR_FILES,  # 构建所需的数据文件列表
+    extra_args = [  # 传递给生成器的额外参数
+        "zirgen/circuit/keccak/keccak.zir",  # 主电路文件
+        "-I",  # 包含目录选项
+        "zirgen/circuit/keccak",  # 包含目录路径
+        "--validity-split-count=5",  # 有效性拆分计数参数
     ],
 )
