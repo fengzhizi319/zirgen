@@ -13,5 +13,7 @@ component Top() {
 test SimpleFactorial {
   // CHECK: [0] Output(24) -> ()
   x := Factorial<4>();
+  Log("Hello Factorial!");
   Output(x);
+  Log("Hello Factorial!");
 }

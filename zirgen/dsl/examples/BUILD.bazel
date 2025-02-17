@@ -14,3 +14,13 @@ zirgen_genfiles(
         ),
     ],
 )
+zirgen_genfiles(
+    name = "HelloworldIncs",
+    zir_file = ":hello_world.zir",
+    zirgen_outs = [
+        (
+            ["--emit=rust"],
+            "hello_world.rs.inc",
+        ),
+    ],
+)
