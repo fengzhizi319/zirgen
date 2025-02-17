@@ -314,42 +314,45 @@ void emitCode(ModuleOp module, const EmitCodeOptions& opts) {
 }
 
 void emitCodeZirgenPoly(ModuleOp module, StringRef outputDir) {
+  // 创建文件发射器对象
   FileEmitter emitter(outputDir);
 
-  // Inline everything, since everything else expects there to be a single function left.
+  // 内联所有函数，因为后续步骤期望只剩下一个函数
   PassManager pm(module.getContext());
-  pm.addPass(mlir::createInlinerPass());
-  pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
+  pm.addPass(mlir::createInlinerPass()); // 内联 pass
+  pm.addPass(createCanonicalizerPass()); // 规范化 pass
+  pm.addPass(createCSEPass()); // 公共子表达式消除 pass
   if (failed(pm.run(module))) {
-    throw std::runtime_error("Failed to apply stage1 passes");
+    throw std::runtime_error("Failed to apply stage1 passes"); // 如果运行失败则抛出异常
   }
 
-  // Save as IR so we can generate predicates to verify the validity polynomial.
+  // 保存中间表示 (IR)，以便后续生成验证多项式的谓词
   emitter.emitIR("validity", module);
 
+  // 遍历模块中的函数，生成多项式扩展函数、taps 和信息
   module.walk([&](func::FuncOp func) {
-    emitter.emitPolyExtFunc(func);
-    emitter.emitTaps(func);
-    emitter.emitInfo(func);
-    emitter.emitTapsCpp(func);
+    emitter.emitPolyExtFunc(func); // 生成多项式扩展函数
+    emitter.emitTaps(func); // 生成 taps
+    emitter.emitInfo(func); // 生成信息
+    emitter.emitTapsCpp(func); // 生成 C++ taps
   });
 
-  // Split up functions for poly_fp
+  // 清除 PassManager 并添加平衡拆分 pass
   pm.clear();
-  pm.addPass(Zll::createBalancedSplitPass(/*maxOps=*/1000));
-  pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
+  pm.addPass(Zll::createBalancedSplitPass(/*maxOps=*/1000)); // 平衡拆分 pass
+  pm.addPass(createCanonicalizerPass()); // 规范化 pass
+  pm.addPass(createCSEPass()); // 公共子表达式消除 pass
   if (failed(pm.run(module))) {
-    throw std::runtime_error("Failed to balanced split");
+    throw std::runtime_error("Failed to balanced split"); // 如果运行失败则抛出异常
   }
 
+  // 遍历模块中的函数，生成多项式函数和验证检查代码
   module.walk([&](func::FuncOp func) {
     if (SymbolTable::getSymbolVisibility(func) == SymbolTable::Visibility::Private)
-      return;
+      return; // 如果函数是私有的，则跳过
 
-    emitter.emitPolyFunc("poly_fp", func);
-    emitter.emitEvalCheck(".cu", ".cuh", func);
+    emitter.emitPolyFunc("poly_fp", func); // 生成多项式函数
+    emitter.emitEvalCheck(".cu", ".cuh", func); // 生成 CUDA 验证检查代码
   });
 }
 

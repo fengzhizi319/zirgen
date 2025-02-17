@@ -257,35 +257,50 @@ size_t Module::computeMaxDegree(StringRef name) {
 }
 
 void Module::dumpPoly(StringRef name) {
+  // 创建 PassManager 并添加优化和计算多项式的 passes
   PassManager pm(module->getContext());
   OpPassManager& opm = pm.nest<func::FuncOp>();
-  opm.addPass(createMakePolynomialPass());
-  opm.addPass(createCanonicalizerPass());
-  opm.addPass(createCSEPass());
-  opm.addPass(createComputeTapsPass());
+  opm.addPass(createMakePolynomialPass());  // 创建多项式 pass
+  opm.addPass(createCanonicalizerPass());  // 规范化 pass
+  opm.addPass(createCSEPass());  // 公共子表达式消除 pass
+  opm.addPass(createComputeTapsPass());  // 计算 taps pass
+
+  // 运行 PassManager，如果失败则抛出异常
   if (failed(pm.run(*module))) {
     throw std::runtime_error("Failed to apply basic optimization passes");
   }
+
+  // 查找指定名称的函数，如果未找到则抛出异常
   auto func = module->lookupSymbol<func::FuncOp>(name);
   if (!func) {
     throw std::runtime_error(("Unable to find function: " + name).str());
   }
 
+  // 创建 DataFlowSolver 并加载 DegreeAnalysis
   DataFlowSolver solver;
   solver.load<Zll::DegreeAnalysis>();
+
+  // 初始化并运行 solver，如果失败则抛出异常
   if (failed(solver.initializeAndRun(func)))
     throw std::runtime_error("Failed to calculate degree");
 
+  // 获取函数的第一个基本块和终止操作
   Block* block = &func.front();
   Operation* cur = block->getTerminator();
+
+  // 获取当前操作后的程序点并计算度数
   auto point = solver.getProgramPointAfter(cur);
   size_t degree = solver.lookupState<DegreeLattice>(point)->getValue().get();
   llvm::errs() << "Degree = " << degree << "\n";
+
+  // 遍历操作并打印调试信息
   while (true) {
     point = solver.getProgramPointAfter(cur);
     cur->print(llvm::errs(), OpPrintingFlags().enableDebugInfo(true));
     size_t curDeg = solver.lookupState<DegreeLattice>(point)->getValue().get();
     llvm::errs() << "\n";
+
+    // 根据操作类型选择下一个操作
     if (auto retOp = mlir::dyn_cast<mlir::func::ReturnOp>(cur)) {
       cur = retOp.getOperands()[0].getDefiningOp();
     } else if (auto op = mlir::dyn_cast<AndCondOp>(cur)) {
@@ -325,7 +340,8 @@ void Module::dumpPoly(StringRef name) {
     }
   }
 
-  // module->print(llvm::errs(), OpPrintingFlags().enableDebugInfo(true));
+  // 打印模块信息（已注释掉）
+  module->print(llvm::errs(), OpPrintingFlags().enableDebugInfo(true));
 }
 
 void Module::dumpStage(size_t stage, bool debug) {
