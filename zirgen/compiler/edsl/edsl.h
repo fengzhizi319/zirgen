@@ -51,30 +51,45 @@ struct ConstructInfo;
 
 class Val {
 public:
+  // 默认构造函数
   Val() = default;
+  // 使用 mlir::Value 初始化 Val 对象
   Val(mlir::Value value) : value(value) {}
+  // 使用 uint64_t 值和 SourceLoc 初始化 Val 对象
   Val(uint64_t val, SourceLoc loc = current());
+  // 使用 uint64_t 数组和 SourceLoc 初始化 Val 对象
   Val(llvm::ArrayRef<uint64_t> coeffs, SourceLoc loc = current());
+  // 使用 Register 对象和 SourceLoc 初始化 Val 对象
   Val(Register reg, SourceLoc loc = current());
-
+  // 获取内部存储的 mlir::Value 对象
   mlir::Value getValue() const { return value; }
 
 private:
+  // 内部存储的 mlir::Value 对象
   mlir::Value value;
 };
 
 class Register {
+  // friend类声明，允许 Val、Buffer 和 CaptureVal 访问 Register 的私有成员
   friend class Val;
   friend class Buffer;
   friend struct CaptureVal;
 
 public:
+  // 删除赋值运算符重载，禁止将一个 Register 对象赋值给另一个 Register 对象
   void operator=(const Register& x) = delete;
+
+  // 赋值运算符重载，允许将 CaptureVal 对象赋值给 Register 对象
   void operator=(CaptureVal x);
 
 private:
+  // 构造函数，使用 mlir::Value 和可选的标识符初始化 Register 对象
   Register(mlir::Value buf, llvm::StringRef ident = {}) : buf(buf), ident(ident) {}
+
+  // 存储 mlir::Value 对象，表示寄存器的底层缓冲区
   mlir::Value buf;
+
+  // 存储寄存器的标识符
   std::string ident;
 };
 
