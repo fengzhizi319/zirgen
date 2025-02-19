@@ -113,6 +113,7 @@ def build_circuit(name, srcs = [], bin = None, deps = [], outs = None, data = []
         #打印bin
         print(bin)
         print(name)
+        print(name)
 
         # 调用 _build_circuit_rule 规则来生成电路
         _build_circuit_rule(

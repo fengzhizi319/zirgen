@@ -23,7 +23,7 @@ constexpr size_t kInvRate = 4;
 
 // clang-format off
 namespace risc0::circuit::fib {
-
+//poly_mix为Fiat-Shamir产生的随机数，用来聚合多项式
 FpExt poly_fp(size_t cycle, size_t steps, FpExt* poly_mix, Fp** args) {
   size_t mask = steps - 1;
   // loc(unknown)
@@ -43,11 +43,11 @@ FpExt poly_fp(size_t cycle, size_t steps, FpExt* poly_mix, Fp** args) {
   // loc("zirgen/circuit/fib/fib.cpp":23:0)
   auto x7 = args[0][1 * steps + ((cycle - kInvRate * 0) & mask)];
   // loc("zirgen/circuit/fib/fib.cpp":24:0)
-  auto x8 = args[2][0 * steps + ((cycle - kInvRate * 2) & mask)];
+  auto x8 = args[2][0 * steps + ((cycle - kInvRate * 2) & mask)];//BACK(1, Val(val))
   // loc("zirgen/circuit/fib/fib.cpp":24:0)
-  auto x9 = args[2][0 * steps + ((cycle - kInvRate * 1) & mask)];
+  auto x9 = args[2][0 * steps + ((cycle - kInvRate * 1) & mask)];//BACK(2, Val(val))
   // loc("zirgen/circuit/fib/fib.cpp":24:0)
-  auto x10 = x9 + x8;
+  auto x10 = x9 + x8;//BACK(1)+BACK(2)
   // loc("zirgen/circuit/fib/fib.cpp":24:0)
   auto x11 = x3 - x10;
   // loc("zirgen/circuit/fib/fib.cpp":24:0)

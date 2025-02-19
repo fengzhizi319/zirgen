@@ -44,8 +44,8 @@ using FpExtReg = Comp<FpExtRegImpl>;
 class FpExt {
 public:
   FpExt() = default;
-  FpExt(Val x, risc0::SourceLoc loc = current());
-  FpExt(std::array<Val, kExtSize> elems, risc0::SourceLoc loc = current());
+  FpExt(Val x, risc0::SourceLoc loc = current());//填充到所有分量，loc 记录代码位置
+  FpExt(std::array<Val, kExtSize> elems, risc0::SourceLoc loc = current());//直接指定各分量值
   FpExt(FpExtReg reg, risc0::SourceLoc loc = current());
   Val elem(size_t i) { return elems[i]; }
   std::array<Val, kExtSize> getElems() { return elems; }

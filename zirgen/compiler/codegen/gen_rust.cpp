@@ -26,12 +26,15 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/include/llvm/ADT/StringExtras.h"
+#include "iostream"
 
 #define DEBUG_TYPE "codegen"
 
 using namespace mlir;
 using namespace kainjow::mustache;
 using namespace zirgen::Zll;
+using namespace std;
+
 
 namespace fs = std::filesystem;
 
@@ -78,150 +81,151 @@ public:
   ~RustStreamEmitterImpl() = default;
 
   void emitStepFunc(const std::string& name, func::FuncOp func) override {
-    mustache tmpl;
+    mustache tmpl; // 定义 mustache 模板变量
     // TODO: remove this hack once host-side recursion code is unified with rv32im.
-    bool isRecursion = func.getName() == "recursion";
+    bool isRecursion = func.getName() == "recursion"; // 判断函数名是否为 "recursion"
     if (isRecursion) {
-      tmpl = openTemplate("zirgen/compiler/codegen/cpp/recursion/step.tmpl.cpp");
+      tmpl = openTemplate("zirgen/compiler/codegen/cpp/recursion/step.tmpl.cpp"); // 加载递归模板
     } else {
-      tmpl = openTemplate("zirgen/compiler/codegen/cpp/step.tmpl.cpp");
+      tmpl = openTemplate("zirgen/compiler/codegen/cpp/step.tmpl.cpp"); // 加载普通步骤模板
     }
 
-    FileContext ctx;
+
+    FileContext ctx; // 创建文件上下文对象
     for (auto [idx, arg] : llvm::enumerate(func.getArguments())) {
-      ctx.vars[arg] = llvm::formatv("args[{0}]", idx).str();
+      ctx.vars[arg] = llvm::formatv("args[{0}]", idx).str(); // 将函数参数映射到上下文中
     }
 
-    list lines;
-    emitStepBlock(func.front(), ctx, lines, /*depth=*/0, isRecursion);
-    Value retVal = func.front().getTerminator()->getOperand(0);
-    lines.push_back(llvm::formatv("return {0};", ctx.use(retVal)).str());
+    list lines; // 定义存储代码行的列表
+    emitStepBlock(func.front(), ctx, lines, /*depth=*/0, isRecursion); // 生成步骤块代码
+    Value retVal = func.front().getTerminator()->getOperand(0); // 获取返回值
+    lines.push_back(llvm::formatv("return {0};", ctx.use(retVal)).str()); // 添加返回值代码行
 
     tmpl.render(
         object{
-            {"name", func.getName().str()},
-            {"fn", "step_" + name},
-            {"body", lines},
+            {"name", func.getName().str()}, // 函数名
+            {"fn", "step_" + name}, // 函数前缀
+            {"body", lines}, // 函数体代码
         },
-        ofs);
+        ofs); // 渲染模板并输出到 ofs
   }
 
-  void emitPolyFunc(const std::string& fn,
-                    func::FuncOp func,
-                    size_t splitIndex,
-                    size_t splitCount) override {
-    MixPowAnalysis mixPows(func);
+void emitPolyFunc(const std::string& fn,
+                  func::FuncOp func,
+                  size_t splitIndex,
+                  size_t splitCount) override {
+  MixPowAnalysis mixPows(func); // 初始化 MixPowAnalysis 对象
 
-    mustache tmpl = openTemplate("zirgen/compiler/codegen/cpp/poly.tmpl.cpp");
+  mustache tmpl = openTemplate("zirgen/compiler/codegen/cpp/poly.tmpl.cpp"); // 加载模板文件
 
-    list funcProtos;
-    list funcs;
+  list funcProtos; // 定义函数原型列表
+  list funcs; // 定义函数体列表
 
-    size_t curSplitIndex = 0;
-    for (mlir::func::FuncOp calledFunc : mixPows.getCalledFuncs()) {
-      FileContext ctx;
-      std::string args;
-      for (auto [idx, arg] : llvm::enumerate(calledFunc.getArguments())) {
-        std::string argName = llvm::formatv("arg{0}", idx).str();
-        ctx.vars[arg] = argName;
+  size_t curSplitIndex = 0;
+  for (mlir::func::FuncOp calledFunc : mixPows.getCalledFuncs()) { // 遍历被调用的函数
+    FileContext ctx; // 初始化上下文
+    std::string args;
+    for (auto [idx, arg] : llvm::enumerate(calledFunc.getArguments())) { // 遍历函数参数
+      std::string argName = llvm::formatv("arg{0}", idx).str();
+      ctx.vars[arg] = argName; // 将参数映射到上下文中
 
-        args += ", ";
+      args += ", ";
 
-        TypeSwitch<Type>(arg.getType())
-            .Case<ValType>([&](auto valType) {
-              if (valType.getFieldK() > 1)
-                args += "FpExt";
-              else
-                args += "Fp";
-            })
-            .Case<BufferType>([&](auto bufType) {
-              if (bufType.getElement().getFieldK() > 1)
-                args += "FpExt*";
-              else
-                args += "Fp*";
-            })
-            .Case<ConstraintType>([&](auto) { args += "FpExt"; })
-            .Default([&](Type ty) {
-              llvm::errs() << "Unknown type to pass to call: " << ty << "\n";
-              assert(false);
-            });
-        args += " " + argName;
-      }
-
-      funcProtos.push_back(object{{"args", args}, {"fn", calledFunc.getName().str()}});
-
-      if ((curSplitIndex++ % splitCount) != splitIndex)
-        continue;
-
-      list lines;
-      for (Operation& op : calledFunc.front().without_terminator()) {
-        LLVM_DEBUG(llvm::dbgs() << "emitPolyFunc: " << op << "\n");
-        emitOperation(&op, ctx, lines, /*depth=*/0, "Fp", FuncKind::PolyFp, &mixPows);
-      }
-      Value retVal = calledFunc.front().getTerminator()->getOperand(0);
-      lines.push_back(llvm::formatv("return {0};", ctx.use(retVal)).str());
-      funcs.push_back(object{
-          {"args", args},
-          {"fn", calledFunc.getName().str()},
-          {"body", lines},
-      });
+      TypeSwitch<Type>(arg.getType()) // 根据参数类型生成参数字符串
+          .Case<ValType>([&](auto valType) {
+            if (valType.getFieldK() > 1)
+              args += "FpExt";
+            else
+              args += "Fp";
+          })
+          .Case<BufferType>([&](auto bufType) {
+            if (bufType.getElement().getFieldK() > 1)
+              args += "FpExt*";
+            else
+              args += "Fp*";
+          })
+          .Case<ConstraintType>([&](auto) { args += "FpExt"; })
+          .Default([&](Type ty) {
+            llvm::errs() << "Unknown type to pass to call: " << ty << "\n";
+            assert(false);
+          });
+      args += " " + argName;
     }
 
-    // Main function
-    FileContext ctx;
-    for (auto [idx, arg] : llvm::enumerate(func.getArguments())) {
-      std::string argsDesc;
-      if (auto argName = func.getArgAttrOfType<StringAttr>(idx, "zirgen.argName")) {
-        argsDesc = ("/*" + argName.strref() + "=*/").str();
-      }
-      ctx.vars[arg] = llvm::formatv("{0}args[{1}]", argsDesc, idx).str();
+    funcProtos.push_back(object{{"args", args}, {"fn", calledFunc.getName().str()}}); // 添加函数原型
+
+    if ((curSplitIndex++ % splitCount) != splitIndex)
+      continue;
+
+    list lines;
+    for (Operation& op : calledFunc.front().without_terminator()) { // 生成函数体代码
+      LLVM_DEBUG(llvm::dbgs() << "emitPolyFunc: " << op << "\n");
+      emitOperation(&op, ctx, lines, /*depth=*/0, "Fp", FuncKind::PolyFp, &mixPows);
     }
-
-    funcProtos.push_back(object{{"args", ", Fp** args"}, {"fn", fn}});
-
-    if ((curSplitIndex++ % splitCount) == splitIndex) {
-      list lines;
-      for (Operation& op : func.front().without_terminator()) {
-        LLVM_DEBUG(llvm::dbgs() << "emitPolyFunc: " << op << "\n");
-        emitOperation(&op, ctx, lines, /*depth=*/0, "Fp", FuncKind::PolyFp, &mixPows);
-      }
-      Value retVal = func.front().getTerminator()->getOperand(0);
-      lines.push_back(llvm::formatv("return {0};", ctx.use(retVal)).str());
-
-      funcs.push_back(object{{"args", ", Fp** args"}, {"fn", fn}, {"body", lines}});
-    }
-
-    tmpl.render(object{{"decls", funcProtos}, {"funcs", funcs}, {"name", func.getName().str()}},
-                ofs);
+    Value retVal = calledFunc.front().getTerminator()->getOperand(0); // 获取返回值
+    lines.push_back(llvm::formatv("return {0};", ctx.use(retVal)).str()); // 添加返回值代码行
+    funcs.push_back(object{
+        {"args", args},
+        {"fn", calledFunc.getName().str()},
+        {"body", lines},
+    });
   }
+
+  // 生成主函数
+  FileContext ctx;
+  for (auto [idx, arg] : llvm::enumerate(func.getArguments())) { // 遍历函数参数
+    std::string argsDesc;
+    if (auto argName = func.getArgAttrOfType<StringAttr>(idx, "zirgen.argName")) {
+      argsDesc = ("/*" + argName.strref() + "=*/").str();
+    }
+    ctx.vars[arg] = llvm::formatv("{0}args[{1}]", argsDesc, idx).str(); // 将参数映射到上下文中
+  }
+
+  funcProtos.push_back(object{{"args", ", Fp** args"}, {"fn", fn}}); // 添加主函数原型
+
+  if ((curSplitIndex++ % splitCount) == splitIndex) {
+    list lines;
+    for (Operation& op : func.front().without_terminator()) { // 生成主函数体代码
+      LLVM_DEBUG(llvm::dbgs() << "emitPolyFunc: " << op << "\n");
+      emitOperation(&op, ctx, lines, /*depth=*/0, "Fp", FuncKind::PolyFp, &mixPows);
+    }
+    Value retVal = func.front().getTerminator()->getOperand(0); // 获取返回值
+    lines.push_back(llvm::formatv("return {0};", ctx.use(retVal)).str()); // 添加返回值代码行
+
+    funcs.push_back(object{{"args", ", Fp** args"}, {"fn", fn}, {"body", lines}});
+  }
+
+  tmpl.render(object{{"decls", funcProtos}, {"funcs", funcs}, {"name", func.getName().str()}},
+              ofs); // 渲染模板并输出到 ofs
+}
 
 private:
   void emitStepBlock(Block& block, FileContext& ctx, list& lines, size_t depth, bool isRecursion) {
-    std::string indent(depth * 2, ' ');
-    for (Operation& op : block.without_terminator()) {
+    std::string indent(depth * 2, ' '); // 根据深度定义缩进字符串
+    for (Operation& op : block.without_terminator()) { // 遍历块中的每个操作（不包括终止符）
       LLVM_DEBUG(llvm::dbgs() << "emitStepBlock: " << op << "\n");
       mlir::TypeSwitch<Operation*>(&op)
-          .Case<NondetOp>([&](NondetOp op) {
+          .Case<NondetOp>([&](NondetOp op) { // 处理 NondetOp 操作
             lines.push_back(indent + "{");
-            emitStepBlock(op.getInner().front(), ctx, lines, depth + 1, isRecursion);
+            emitStepBlock(op.getInner().front(), ctx, lines, depth + 1, isRecursion); // 递归处理内部块
             lines.push_back(indent + "}");
           })
-          .Case<IfOp>([&](IfOp op) {
+          .Case<IfOp>([&](IfOp op) { // 处理 IfOp 操作
             lines.push_back(indent +
                             llvm::formatv("if ({0} != 0) {{", ctx.use(op.getCond())).str());
-            emitStepBlock(op.getInner().front(), ctx, lines, depth + 1, isRecursion);
+            emitStepBlock(op.getInner().front(), ctx, lines, depth + 1, isRecursion); // 递归处理内部块
             lines.push_back(indent + "}");
           })
-          .Case<ExternOp>([&](ExternOp op) {
+          .Case<ExternOp>([&](ExternOp op) { // 处理 ExternOp 操作
             // TODO: remove this hack once host-side recursion code is unified with rv32im.
             if (isRecursion) {
-              emitExternRecursion(op, ctx, lines, depth);
+              emitExternRecursion(op, ctx, lines, depth); // 处理递归外部操作
             } else {
-              emitExtern(op, ctx, lines, depth);
+              emitExtern(op, ctx, lines, depth); // 处理普通外部操作
             }
           })
           .Default(
-              [&](Operation* op) { emitOperation(op, ctx, lines, depth, "Fp", FuncKind::Step); });
+              [&](Operation* op) { emitOperation(op, ctx, lines, depth, "Fp", FuncKind::Step); }); // 处理其他类型的操作
     }
   }
 
